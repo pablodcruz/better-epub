@@ -24,6 +24,7 @@ export async function importEpub(file: File): Promise<ImportedBook> {
   if (!file.name.toLowerCase().endsWith(".epub") && file.type !== "application/epub+zip") {
     throw new Error("Choose a DRM-free EPUB file.");
   }
+  assertSecureImportSupport(globalThis.crypto);
   if (file.size > MAX_ARCHIVE_BYTES) {
     throw new Error("This EPUB is larger than the 250 MB import limit.");
   }
@@ -201,6 +202,16 @@ export async function importEpub(file: File): Promise<ImportedBook> {
     },
     resources: resourceRecords,
   };
+}
+
+type CryptoDigestSupport = Pick<Crypto, "subtle"> | undefined;
+
+export function assertSecureImportSupport(cryptoApi: CryptoDigestSupport) {
+  if (!cryptoApi?.subtle?.digest) {
+    throw new Error(
+      "A secure HTTPS connection is required to import EPUB files. Reopen Better ePub at https://better-epub.rweb.site and try again.",
+    );
+  }
 }
 
 function readXml(files: Map<string, Uint8Array>, path: string) {

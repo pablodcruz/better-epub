@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { Locator } from "@readium/shared";
 import { unzipSync, zipSync } from "fflate";
 import { db, saveImportedBook, updateBook } from "./db";
-import { importEpub } from "./epub";
+import { assertSecureImportSupport, importEpub } from "./epub";
 import { resolveArchivePath } from "./paths";
 
 function makeEpub(overrides: Record<string, string> = {}) {
@@ -41,6 +41,12 @@ describe("EPUB import", () => {
   beforeEach(async () => {
     await db.delete();
     await db.open();
+  });
+
+  it("explains that EPUB import needs HTTPS when Web Crypto is unavailable", () => {
+    expect(() => assertSecureImportSupport(undefined)).toThrow(
+      "A secure HTTPS connection is required to import EPUB files",
+    );
   });
 
   it("extracts package metadata, reading order, navigation, and cover", async () => {
