@@ -2,7 +2,7 @@
 
 Better ePub is a private, local-first EPUB 2 and EPUB 3 reader. Imported books are parsed and stored inside the browser; the application does not upload them.
 
-Public reader: **https://better-epub.js.org/**
+Public reader: **https://better-epub.rweb.site/**
 
 ## Current MVP capabilities
 
@@ -49,7 +49,7 @@ The development build enables the PWA service worker because the Readium resourc
 1. Create a GitHub repository and push this project to its `main` branch.
 2. In **Settings → Pages**, select **GitHub Actions** as the source.
 3. The `Test and deploy Better ePub` workflow validates and publishes `dist/`.
-4. The production custom domain is `better-epub.js.org`; keep it configured in the Pages settings before inviting users to create local libraries.
+4. The production custom domain is `better-epub.rweb.site`; keep it configured in the Pages settings before inviting users to create local libraries.
 5. Enable **Enforce HTTPS**.
 
 The Vite build uses relative production asset paths, so it works at either `https://user.github.io/repository/` or a custom-domain root. A custom domain should be adopted early: changing origins later creates a new, separate browser-storage area.
