@@ -1,0 +1,40 @@
+{
+  "name": "better-epub",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "tsc -b --pretty false && vitest run"
+  },
+  "dependencies": {
+    "@readium/css": "2.0.5",
+    "@readium/navigator": "2.8.2",
+    "@readium/navigator-html-injectables": "2.6.3",
+    "@readium/shared": "2.4.0",
+    "dexie": "4.2.1",
+    "fflate": "0.8.2",
+    "react": "19.2.4",
+    "react-dom": "19.2.4"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "6.9.1",
+    "@testing-library/react": "16.3.2",
+    "@types/node": "24.10.1",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "5.1.4",
+    "axe-core": "^4.13.0",
+    "esbuild": "0.28.1",
+    "fake-indexeddb": "6.2.4",
+    "jsdom": "28.1.0",
+    "typescript": "5.9.3",
+    "vite": "7.3.6",
+    "vite-plugin-pwa": "1.2.0",
+    "vitest": "4.1.0"
+  }
+}
