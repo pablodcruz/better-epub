@@ -113,6 +113,9 @@ describe("EPUB import", () => {
       pageGutter: 32,
       columnCount: 2,
       textAlign: "justify",
+      reduceMotion: false,
+      screenReaderMode: false,
+      readingRuler: false,
     });
 
     db.close();

@@ -1,7 +1,7 @@
 import type { Locator } from "@readium/shared";
 
 export type ReaderFlow = "paginated" | "scrolled";
-export type ReaderTheme = "paper" | "sepia" | "night";
+export type ReaderTheme = "paper" | "sepia" | "night" | "contrast";
 export type TextAlignment = "start" | "left" | "right" | "justify";
 
 export interface ManifestLinkJson {
@@ -60,6 +60,7 @@ export interface AnnotationRecord {
   quote?: string;
   note?: string;
   color?: "yellow" | "green" | "blue" | "pink";
+  tags?: string[];
   createdAt: number;
   updatedAt: number;
 }
@@ -76,6 +77,9 @@ export interface ReaderPreferencesRecord {
   pageGutter: number;
   columnCount: 1 | 2;
   textAlign: TextAlignment;
+  reduceMotion: boolean;
+  screenReaderMode: boolean;
+  readingRuler: boolean;
 }
 
 export interface ImportedBook {

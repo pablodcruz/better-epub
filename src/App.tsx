@@ -19,9 +19,16 @@ import {
 import { importEpub } from "./lib/epub";
 import { createPositions, createPublication, flattenToc } from "./lib/readium";
 import { virtualResourceUrl } from "./lib/paths";
-import { createAnnotationExport, type AnnotationExportFormat } from "./lib/annotations";
+import {
+  createAnnotationArchive,
+  createAnnotationExport,
+  importAnnotations,
+  type AnnotationExportFormat,
+} from "./lib/annotations";
 import { createLibraryBackup, restoreLibraryBackup } from "./lib/backup";
+import { extractFootnote, footnoteTarget, type FootnoteTarget } from "./lib/footnotes";
 import { pageTurnForKey, pageTurnForSwipe, type PageTurn } from "./lib/navigation";
+import { adjacentResourceLocator, loadSpeechSegments, type SpeechSegment } from "./lib/read-aloud";
 import { findResourceMatches, type BookSearchResult } from "./lib/search";
 import type {
   AnnotationRecord,
@@ -36,6 +43,7 @@ type InstallPromptEvent = Event & {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
 };
+type ReadAloudStatus = "idle" | "loading" | "playing" | "paused";
 
 export default function App() {
   const [route, setRoute] = useState<AppRoute>({ screen: "library" });
@@ -362,15 +370,22 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
     keyDown: (event: KeyboardEvent) => void;
     pointerDown: (event: Pick<PointerEvent, "clientX" | "clientY">) => void;
     pointerUp: (event: Pick<PointerEvent, "clientX" | "clientY">) => void;
+    linkClick: (anchor: HTMLAnchorElement, currentPath: string) => boolean;
   }>({
     keyDown: () => undefined,
     pointerDown: () => undefined,
     pointerUp: () => undefined,
+    linkClick: () => false,
   });
+  const speechSessionRef = useRef(0);
+  const speechQueueRef = useRef<SpeechSegment[]>([]);
+  const speechIndexRef = useRef(0);
   const [preferences, setPreferences] = useState<ReaderPreferencesRecord | null>(null);
   const [annotations, setAnnotations] = useState<AnnotationRecord[]>([]);
   const [selection, setSelection] = useState<BasicTextSelection | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
+  const [selectionColor, setSelectionColor] = useState<NonNullable<AnnotationRecord["color"]>>("yellow");
+  const [selectionTags, setSelectionTags] = useState("");
   const [panel, setPanel] = useState<"toc" | "notes" | "appearance" | "search" | null>("toc");
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState<BookSearchResult[]>([]);
@@ -382,6 +397,14 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
   const [wordCount, setWordCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [footnote, setFootnote] = useState<{ title: string; text: string } | null>(null);
+  const [rulerY, setRulerY] = useState(0);
+  const [readAloudStatus, setReadAloudStatus] = useState<ReadAloudStatus>("idle");
+  const [speechSegment, setSpeechSegment] = useState<SpeechSegment | null>(null);
+  const [speechRate, setSpeechRate] = useState(1);
+  const [speechVoices, setSpeechVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [speechVoiceUri, setSpeechVoiceUri] = useState("");
 
   useEffect(() => {
     void Promise.all([
@@ -391,6 +414,23 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
       setPreferences(storedPreferences);
       setAnnotations(storedAnnotations);
     });
+  }, [book.id]);
+
+  useEffect(() => {
+    if (!("speechSynthesis" in window)) return;
+    const refreshVoices = () => {
+      const voices = window.speechSynthesis.getVoices();
+      setSpeechVoices(voices);
+      setSpeechVoiceUri((current) => current || voices.find((voice) => voice.default)?.voiceURI || voices[0]?.voiceURI || "");
+    };
+    refreshVoices();
+    window.speechSynthesis.addEventListener("voiceschanged", refreshVoices);
+    return () => window.speechSynthesis.removeEventListener("voiceschanged", refreshVoices);
+  }, []);
+
+  useEffect(() => () => {
+    speechSessionRef.current += 1;
+    if ("speechSynthesis" in window) window.speechSynthesis.cancel();
   }, [book.id]);
 
   useEffect(() => {
@@ -423,6 +463,14 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
             document.addEventListener("keydown", (event) => readerInputHandlers.current.keyDown(event), true);
             document.addEventListener("pointerdown", (event) => readerInputHandlers.current.pointerDown(event), true);
             document.addEventListener("pointerup", (event) => readerInputHandlers.current.pointerUp(event), true);
+            document.addEventListener("click", (event) => {
+              const target = event.target instanceof Element ? event.target.closest("a") : null;
+              if (!target || target.tagName.toLowerCase() !== "a") return;
+              const currentPath = framePublicationPath(frame.src, book.id);
+              if (!currentPath || !readerInputHandlers.current.linkClick(target as HTMLAnchorElement, currentPath)) return;
+              event.preventDefault();
+              event.stopImmediatePropagation();
+            }, true);
           });
         };
         const listeners: EpubNavigatorListeners = {
@@ -456,6 +504,8 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
           textSelected: (nextSelection) => {
             setSelection(nextSelection.text.trim() ? nextSelection : null);
             setNoteDraft("");
+            setSelectionTags("");
+            setSelectionColor("yellow");
           },
           contentProtection: () => undefined,
           contextMenu: () => undefined,
@@ -565,8 +615,13 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
         event.preventDefault();
         setImmersive(false);
         setPanel("search");
+      } else if (event.key.toLowerCase() === "l") {
+        event.preventDefault();
+        void startReadAloud();
       } else if (event.key === "Escape") {
         setImmersive(false);
+        setFootnote(null);
+        setSelection(null);
       }
     };
     readerInputHandlers.current.keyDown = handleKeyDown;
@@ -576,7 +631,10 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
 
   const updatePreferences = async (patch: Partial<ReaderPreferencesRecord>) => {
     if (!preferences) return;
-    const next = { ...preferences, ...patch };
+    const accessibilityPatch = patch.screenReaderMode
+      ? { flow: "scrolled" as const, columnCount: 1 as const }
+      : {};
+    const next = { ...preferences, ...patch, ...accessibilityPatch };
     setPreferences(next);
     await db.preferences.put(next);
   };
@@ -591,7 +649,8 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
       locator: selection.locator.serialize(),
       quote: selection.text,
       note: noteDraft.trim() || undefined,
-      color: "yellow",
+      color: selectionColor,
+      tags: parseTags(selectionTags),
       createdAt: now,
       updatedAt: now,
     };
@@ -599,6 +658,7 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
     setAnnotations((current) => [...current, annotation]);
     setSelection(null);
     setNoteDraft("");
+    setSelectionTags("");
     setPanel("notes");
   };
 
@@ -623,6 +683,139 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
     setAnnotations((current) => current.filter((annotation) => annotation.id !== id));
   };
 
+  const editAnnotation = async (id: string, patch: Pick<AnnotationRecord, "note" | "color" | "tags">) => {
+    const annotation = annotations.find((candidate) => candidate.id === id);
+    if (!annotation) return;
+    const next = { ...annotation, ...patch, updatedAt: Date.now() };
+    await db.annotations.put(next);
+    setAnnotations((current) => current.map((candidate) => candidate.id === id ? next : candidate));
+  };
+
+  const handleAnnotationImport = async (file: File) => {
+    try {
+      const imported = await importAnnotations(file, book);
+      await db.annotations.bulkPut(imported);
+      setAnnotations((current) => [...current, ...imported]);
+      setNotice(`${imported.length} ${imported.length === 1 ? "annotation" : "annotations"} imported.`);
+    } catch (reason) {
+      setNotice(reason instanceof Error ? reason.message : "The annotations could not be imported.");
+    }
+  };
+
+  const openFootnote = async (target: FootnoteTarget) => {
+    const resource = await db.resources.get([book.id, target.path]);
+    if (!resource) return;
+    const extracted = await extractFootnote(resource.blob, resource.mediaType, target.fragment);
+    if (extracted) setFootnote(extracted);
+  };
+
+  readerInputHandlers.current.linkClick = (anchor, currentPath) => {
+    const target = footnoteTarget(anchor, currentPath);
+    if (!target) return false;
+    void openFootnote(target);
+    return true;
+  };
+
+  const clearSpeechHighlight = () => navigatorRef.current?.applyDecorations([], "read-aloud");
+
+  const stopReadAloud = () => {
+    speechSessionRef.current += 1;
+    if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+    speechQueueRef.current = [];
+    speechIndexRef.current = 0;
+    setReadAloudStatus("idle");
+    setSpeechSegment(null);
+    clearSpeechHighlight();
+  };
+
+  const speakAt = async (index: number, session: number): Promise<void> => {
+    if (session !== speechSessionRef.current || !("speechSynthesis" in window)) return;
+    let queue = speechQueueRef.current;
+    if (index >= queue.length) {
+      const currentHref = queue.at(-1)?.locator.href ?? navigatorRef.current?.currentLocator?.href;
+      const publication = publicationRef.current;
+      const nextLocator = currentHref ? adjacentResourceLocator(book, currentHref, 1) : undefined;
+      if (!publication || !nextLocator) {
+        stopReadAloud();
+        return;
+      }
+      setReadAloudStatus("loading");
+      queue = await loadSpeechSegments(publication, book, nextLocator);
+      if (session !== speechSessionRef.current || !queue.length) {
+        stopReadAloud();
+        return;
+      }
+      speechQueueRef.current = queue;
+      index = 0;
+    }
+    const segment = queue[Math.max(0, index)];
+    if (!segment) return;
+    speechIndexRef.current = Math.max(0, index);
+    setSpeechSegment(segment);
+    setReadAloudStatus("playing");
+    navigatorRef.current?.go(segment.locator, !preferences?.reduceMotion, () => undefined);
+    navigatorRef.current?.applyDecorations([{
+      id: segment.id,
+      locator: segment.locator,
+      style: { type: DecorationStyleType.HighlightUnderline, tint: "#e28c3a", enforceContrast: true },
+    }], "read-aloud");
+    const utterance = new SpeechSynthesisUtterance(segment.text);
+    utterance.rate = speechRate;
+    utterance.lang = segment.language || book.language || "";
+    utterance.voice = speechVoices.find((voice) => voice.voiceURI === speechVoiceUri) ?? null;
+    utterance.onend = () => {
+      if (session === speechSessionRef.current) void speakAt(speechIndexRef.current + 1, session);
+    };
+    utterance.onerror = (event) => {
+      if (session === speechSessionRef.current && event.error !== "canceled" && event.error !== "interrupted") {
+        setNotice("Read aloud stopped because the system voice could not continue.");
+        stopReadAloud();
+      }
+    };
+    window.speechSynthesis.speak(utterance);
+  };
+
+  const startReadAloud = async () => {
+    if (!("speechSynthesis" in window)) {
+      setNotice("Read aloud is not supported by this browser.");
+      return;
+    }
+    if (readAloudStatus === "playing") {
+      window.speechSynthesis.pause();
+      setReadAloudStatus("paused");
+      return;
+    }
+    if (readAloudStatus === "paused") {
+      window.speechSynthesis.resume();
+      setReadAloudStatus("playing");
+      return;
+    }
+    const publication = publicationRef.current;
+    const locator = navigatorRef.current?.currentLocator ?? currentLocator;
+    if (!publication || !locator) return;
+    const session = speechSessionRef.current + 1;
+    speechSessionRef.current = session;
+    window.speechSynthesis.cancel();
+    setReadAloudStatus("loading");
+    const queue = await loadSpeechSegments(publication, book, locator);
+    if (session !== speechSessionRef.current) return;
+    if (!queue.length) {
+      setNotice("No readable text was found in this section.");
+      stopReadAloud();
+      return;
+    }
+    speechQueueRef.current = queue;
+    await speakAt(0, session);
+  };
+
+  const skipSpeech = (delta: -1 | 1) => {
+    if (!speechQueueRef.current.length) return;
+    const session = speechSessionRef.current + 1;
+    speechSessionRef.current = session;
+    window.speechSynthesis.cancel();
+    void speakAt(Math.max(0, speechIndexRef.current + delta), session);
+  };
+
   const navigateToLocator = (locator: Locator, remember = true) => {
     const navigator = navigatorRef.current;
     if (!navigator) return;
@@ -630,7 +823,7 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
       const previous = navigator.currentLocator ?? currentLocator;
       if (previous) setNavigationHistory((history) => [...history.slice(-18), previous.serialize()]);
     }
-    navigator.go(locator, true, () => undefined);
+    navigator.go(locator, !preferences?.reduceMotion, () => undefined);
   };
 
   const returnToPreviousLocation = () => {
@@ -710,8 +903,8 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
     if (locator) navigateToLocator(locator);
   };
   const turnPage = (direction: PageTurn) => {
-    if (direction === "forward") navigatorRef.current?.goForward(true, () => undefined);
-    else navigatorRef.current?.goBackward(true, () => undefined);
+    if (direction === "forward") navigatorRef.current?.goForward(!preferences?.reduceMotion, () => undefined);
+    else navigatorRef.current?.goBackward(!preferences?.reduceMotion, () => undefined);
   };
   const handlePointerDown = (event: Pick<PointerEvent, "clientX" | "clientY">) => {
     pointerStart.current = { x: event.clientX, y: event.clientY };
@@ -727,7 +920,7 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
   readerInputHandlers.current.pointerUp = handlePointerUp;
 
   return (
-    <div className={`reader-app theme-${preferences?.theme ?? "paper"} ${immersive ? "is-immersive" : ""}`}>
+    <div className={`reader-app theme-${preferences?.theme ?? "paper"} ${immersive ? "is-immersive" : ""} ${preferences?.reduceMotion ? "reduce-motion" : ""} ${preferences?.screenReaderMode ? "screen-reader-mode" : ""}`}>
       <header className="reader-header">
         <button className="icon-button" type="button" onClick={onBack} aria-label="Back to library"><Icon name="back" /></button>
         <div className="reader-title"><strong>{book.title}</strong><span>{book.author}</span></div>
@@ -735,6 +928,7 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
           <ToolButton icon="list" label="Contents" active={panel === "toc"} onClick={() => setPanel(panel === "toc" ? null : "toc")} />
           <ToolButton icon="search" label="Search" active={panel === "search"} onClick={() => setPanel(panel === "search" ? null : "search")} />
           <ToolButton icon="note" label="Notes" active={panel === "notes"} onClick={() => setPanel(panel === "notes" ? null : "notes")} />
+          <ToolButton icon="speaker" label="Listen" active={readAloudStatus !== "idle"} onClick={() => void startReadAloud()} />
           <ToolButton icon="text" label="Appearance" active={panel === "appearance"} onClick={() => setPanel(panel === "appearance" ? null : "appearance")} />
           <ToolButton icon="bookmark" label="Bookmark" active={false} onClick={() => void addBookmark()} />
         </div>
@@ -745,10 +939,10 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
           <aside className="reader-panel" aria-label={panelLabel(panel)}>
             <div className="panel-heading"><h2>{panelLabel(panel)}</h2><button className="icon-button" type="button" onClick={() => setPanel(null)} aria-label="Close panel"><Icon name="close" /></button></div>
             {panel === "toc" && <TocPanel items={book.manifest.toc} readingOrder={book.manifest.readingOrder} onNavigate={goToHref} />}
-            {panel === "notes" && <NotesPanel annotations={annotations} onNavigate={(annotation) => {
+            {panel === "notes" && <NotesPanel annotations={annotations} notice={notice} onNavigate={(annotation) => {
               const locator = Locator.deserialize(annotation.locator);
               if (locator) navigateToLocator(locator);
-            }} onDelete={deleteAnnotation} book={book} />}
+            }} onDelete={deleteAnnotation} onEdit={editAnnotation} onImport={handleAnnotationImport} book={book} />}
             {panel === "appearance" && preferences && <AppearancePanel preferences={preferences} onChange={updatePreferences} />}
             {panel === "search" && <SearchPanel query={query} results={searchResults} activeIndex={activeSearchIndex} searching={searching} onQuery={setQuery} onSubmit={runSearch} onNavigate={(index) => navigateSearchResult(index)} />}
           </aside>
@@ -758,10 +952,12 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
           className="reader-stage"
           onPointerDown={handlePointerDown}
           onPointerUp={handlePointerUp}
+          onPointerMove={(event) => preferences?.readingRuler && setRulerY(event.clientY - event.currentTarget.getBoundingClientRect().top)}
         >
           {loading && <LoadingScreen label="Preparing your book…" compact />}
           {error && <div className="reader-error" role="alert"><h2>This book could not be opened</h2><p>{error}</p><button className="secondary-button" type="button" onClick={onBack}>Return to library</button></div>}
           <div ref={navigatorContainer} className="readium-container" role="region" aria-label={`Reading ${book.title}`} />
+          {preferences?.readingRuler && rulerY > 0 && <div className="reading-ruler" style={{ top: rulerY }} aria-hidden="true" />}
           {!loading && !error && (
             <>
               <button className="page-control page-previous" type="button" onClick={() => turnPage(rightToLeft ? "forward" : "backward")} aria-label={rightToLeft ? "Next page" : "Previous page"}><Icon name="chevron-left" /></button>
@@ -783,15 +979,41 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
         </div>
       </footer>
 
+      {readAloudStatus !== "idle" && (
+        <div className="read-aloud-bar" role="region" aria-label="Read aloud controls">
+          <button className="icon-button" type="button" onClick={() => skipSpeech(-1)} aria-label="Previous sentence"><Icon name="previous" /></button>
+          <button className="read-aloud-play" type="button" onClick={() => void startReadAloud()} disabled={readAloudStatus === "loading"}>
+            <Icon name={readAloudStatus === "playing" ? "pause" : "play"} /> {readAloudStatus === "loading" ? "Preparing…" : readAloudStatus === "playing" ? "Pause" : "Resume"}
+          </button>
+          <button className="icon-button" type="button" onClick={() => skipSpeech(1)} aria-label="Next sentence"><Icon name="next" /></button>
+          <span className="speech-preview">{speechSegment?.text}</span>
+          <label>Speed<select value={speechRate} onChange={(event) => setSpeechRate(Number(event.target.value))}><option value="0.75">0.75×</option><option value="1">1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label>
+          <label>Voice<select value={speechVoiceUri} onChange={(event) => setSpeechVoiceUri(event.target.value)}>{speechVoices.map((voice) => <option key={voice.voiceURI} value={voice.voiceURI}>{voice.name}</option>)}</select></label>
+          <button className="icon-button" type="button" onClick={stopReadAloud} aria-label="Stop read aloud"><Icon name="stop" /></button>
+        </div>
+      )}
+
       {selection?.locator && (
         <div className="selection-bar" role="dialog" aria-label="Save selected text">
           <blockquote>{selection.text}</blockquote>
           <textarea value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} placeholder="Add an optional note" aria-label="Annotation note" />
-          <div>
+          <div className="selection-options">
+            <ColorPicker value={selectionColor} onChange={setSelectionColor} />
+            <label><span className="visually-hidden">Tags, separated by commas</span><input value={selectionTags} onChange={(event) => setSelectionTags(event.target.value)} placeholder="Tags: research, quote" /></label>
+          </div>
+          <div className="selection-actions">
             <button className="secondary-button" type="button" onClick={() => void addSelectionAnnotation("highlight")}>Highlight</button>
             <button className="primary-button" type="button" onClick={() => void addSelectionAnnotation("note")}>Save note</button>
             <button className="icon-button" type="button" onClick={() => setSelection(null)} aria-label="Cancel annotation"><Icon name="close" /></button>
           </div>
+        </div>
+      )}
+      {footnote && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setFootnote(null); }}>
+          <section className="footnote-dialog" role="dialog" aria-modal="true" aria-labelledby="footnote-title">
+            <div className="panel-heading"><h2 id="footnote-title">{footnote.title}</h2><button autoFocus className="icon-button" type="button" onClick={() => setFootnote(null)} aria-label="Close footnote"><Icon name="close" /></button></div>
+            <p>{footnote.text}</p>
+          </section>
         </div>
       )}
     </div>
@@ -816,29 +1038,86 @@ function TocItems({ items, onNavigate }: { items: ManifestLinkJson[]; onNavigate
   );
 }
 
-function NotesPanel({ book, annotations, onNavigate, onDelete }: { book: BookRecord; annotations: AnnotationRecord[]; onNavigate: (annotation: AnnotationRecord) => void; onDelete: (id: string) => void }) {
+function NotesPanel({ book, annotations, notice, onNavigate, onDelete, onEdit, onImport }: {
+  book: BookRecord;
+  annotations: AnnotationRecord[];
+  notice: string;
+  onNavigate: (annotation: AnnotationRecord) => void;
+  onDelete: (id: string) => void;
+  onEdit: (id: string, patch: Pick<AnnotationRecord, "note" | "color" | "tags">) => void;
+  onImport: (file: File) => void;
+}) {
+  const importRef = useRef<HTMLInputElement>(null);
+  const [filter, setFilter] = useState("");
+  const [kind, setKind] = useState<"all" | AnnotationRecord["type"]>("all");
+  const needle = filter.trim().toLocaleLowerCase();
+  const filtered = annotations.filter((annotation) => {
+    if (kind !== "all" && annotation.type !== kind) return false;
+    if (!needle) return true;
+    return [annotation.quote, annotation.note, ...(annotation.tags ?? [])].some((value) => value?.toLocaleLowerCase().includes(needle));
+  });
   return (
     <div className="notes-panel">
       <div className="export-row">
         <AnnotationExportLink book={book} annotations={annotations} format="markdown" label="Export Markdown" />
         <AnnotationExportLink book={book} annotations={annotations} format="json" label="Export JSON" />
+        <AnnotationArchiveLink book={book} annotations={annotations} />
+        <button type="button" onClick={() => importRef.current?.click()}>Import</button>
       </div>
-      {annotations.length === 0 ? <p className="empty-panel">Select text to highlight it, or press B to bookmark your location.</p> : (
+      <input ref={importRef} className="visually-hidden" type="file" accept=".annotations,.json,application/json,application/zip" onChange={(event) => {
+        const file = event.target.files?.[0];
+        event.target.value = "";
+        if (file) onImport(file);
+      }} />
+      {notice && <p className="panel-notice" role="status">{notice}</p>}
+      {annotations.length > 0 && <div className="annotation-filters">
+        <input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter notes or tags" aria-label="Filter notebook" />
+        <select value={kind} onChange={(event) => setKind(event.target.value as typeof kind)} aria-label="Filter annotation type"><option value="all">All types</option><option value="highlight">Highlights</option><option value="note">Notes</option><option value="bookmark">Bookmarks</option></select>
+      </div>}
+      {annotations.length === 0 ? <p className="empty-panel">Select text to highlight it, or press B to bookmark your location.</p> : filtered.length === 0 ? <p className="empty-panel">No notebook entries match this filter.</p> : (
         <div className="annotation-list">
-          {[...annotations].reverse().map((annotation) => (
-            <article key={annotation.id} className="annotation-card">
-              <button className="annotation-open" type="button" onClick={() => onNavigate(annotation)}>
-                <span className="annotation-type">{annotation.type}</span>
-                {annotation.quote && <blockquote>{annotation.quote}</blockquote>}
-                {annotation.note && <p>{annotation.note}</p>}
-                <small>{new Date(annotation.createdAt).toLocaleDateString()}</small>
-              </button>
-              <button className="icon-button" type="button" onClick={() => void onDelete(annotation.id)} aria-label="Delete annotation"><Icon name="trash" /></button>
-            </article>
-          ))}
+          {[...filtered].reverse().map((annotation) => <AnnotationCard key={annotation.id} book={book} annotation={annotation} onNavigate={onNavigate} onDelete={onDelete} onEdit={onEdit} />)}
         </div>
       )}
     </div>
+  );
+}
+
+function AnnotationCard({ book, annotation, onNavigate, onDelete, onEdit }: {
+  book: BookRecord;
+  annotation: AnnotationRecord;
+  onNavigate: (annotation: AnnotationRecord) => void;
+  onDelete: (id: string) => void;
+  onEdit: (id: string, patch: Pick<AnnotationRecord, "note" | "color" | "tags">) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [note, setNote] = useState(annotation.note ?? "");
+  const [color, setColor] = useState<NonNullable<AnnotationRecord["color"]>>(annotation.color ?? "yellow");
+  const [tags, setTags] = useState((annotation.tags ?? []).join(", "));
+  const locator = Locator.deserialize(annotation.locator);
+  const citation = [annotation.quote ? `“${annotation.quote}”` : annotation.type === "bookmark" ? "Bookmark" : "Annotation", `— ${book.title}`, book.author, locator?.title].filter(Boolean).join(", ");
+  if (editing) return <article className="annotation-card is-editing">
+    <span className="annotation-type">Edit {annotation.type}</span>
+    <textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Add a note" aria-label="Annotation note" />
+    <ColorPicker value={color} onChange={setColor} />
+    <input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="Tags, separated by commas" aria-label="Annotation tags" />
+    <div className="annotation-edit-actions"><button className="primary-button" type="button" onClick={() => { onEdit(annotation.id, { note: note.trim() || undefined, color, tags: parseTags(tags) }); setEditing(false); }}>Save</button><button className="secondary-button" type="button" onClick={() => setEditing(false)}>Cancel</button></div>
+  </article>;
+  return (
+    <article className={`annotation-card color-${annotation.color ?? "yellow"}`}>
+      <button className="annotation-open" type="button" onClick={() => onNavigate(annotation)}>
+        <span className="annotation-type">{annotation.type}</span>
+        {annotation.quote && <blockquote>{annotation.quote}</blockquote>}
+        {annotation.note && <p>{annotation.note}</p>}
+        {!!annotation.tags?.length && <span className="tag-list">{annotation.tags.map((tag) => <span key={tag}>{tag}</span>)}</span>}
+        <small>{new Date(annotation.createdAt).toLocaleDateString()}</small>
+      </button>
+      <div className="annotation-actions">
+        <button className="icon-button" type="button" onClick={() => setEditing(true)} aria-label="Edit annotation"><Icon name="edit" /></button>
+        <button className="icon-button" type="button" onClick={() => void navigator.clipboard?.writeText(citation)} aria-label="Copy citation"><Icon name="copy" /></button>
+        <button className="icon-button" type="button" onClick={() => void onDelete(annotation.id)} aria-label="Delete annotation"><Icon name="trash" /></button>
+      </div>
+    </article>
   );
 }
 
@@ -849,11 +1128,26 @@ function AnnotationExportLink({ book, annotations, format, label }: { book: Book
   return <a href={url} download={exported.name}>{label}</a>;
 }
 
+function AnnotationArchiveLink({ book, annotations }: { book: BookRecord; annotations: AnnotationRecord[] }) {
+  const exported = useMemo(() => createAnnotationArchive(book, annotations), [book, annotations]);
+  const url = useMemo(() => URL.createObjectURL(new Blob([exported.content], { type: exported.type })), [exported]);
+  useEffect(() => () => URL.revokeObjectURL(url), [url]);
+  return <a href={url} download={exported.name} title="Experimental W3C EPUB annotation set">Export .annotations</a>;
+}
+
+function ColorPicker({ value, onChange }: { value: NonNullable<AnnotationRecord["color"]>; onChange: (color: NonNullable<AnnotationRecord["color"]>) => void }) {
+  return <div className="color-picker" role="group" aria-label="Highlight color">{(["yellow", "green", "blue", "pink"] as const).map((color) => <button key={color} className={`color-swatch color-${color}`} type="button" aria-label={`${color} highlight`} aria-pressed={value === color} onClick={() => onChange(color)} />)}</div>;
+}
+
 function AppearancePanel({ preferences, onChange }: { preferences: ReaderPreferencesRecord; onChange: (patch: Partial<ReaderPreferencesRecord>) => void }) {
   return (
     <form className="appearance-form" onSubmit={(event) => event.preventDefault()}>
+      <fieldset><legend>Reading preset</legend><div className="preset-grid">
+        <button type="button" onClick={() => void onChange({ fontFamily: "Charter, 'Iowan Old Style', Georgia, serif", fontSize: 100, lineHeight: 1.5, letterSpacing: 0, wordSpacing: 0, pageGutter: 24, textAlign: "start", screenReaderMode: false })}><strong>Book</strong><span>Balanced defaults</span></button>
+        <button type="button" onClick={() => void onChange({ fontFamily: "Atkinson Hyperlegible, system-ui, sans-serif", fontSize: 125, lineHeight: 1.75, letterSpacing: 0.04, wordSpacing: 0.12, pageGutter: 32, textAlign: "left", columnCount: 1 })}><strong>Focus</strong><span>Roomier, clearer text</span></button>
+      </div></fieldset>
       <fieldset><legend>Theme</legend><div className="segmented-control">
-        {(["paper", "sepia", "night"] as const).map((theme) => <button key={theme} type="button" aria-pressed={preferences.theme === theme} onClick={() => void onChange({ theme })}>{theme}</button>)}
+        {(["paper", "sepia", "night", "contrast"] as const).map((theme) => <button key={theme} type="button" aria-pressed={preferences.theme === theme} onClick={() => void onChange({ theme })}>{theme}</button>)}
       </div></fieldset>
       <label>Typeface<select value={preferences.fontFamily} onChange={(event) => void onChange({ fontFamily: event.target.value })}>
         <option value="Charter, 'Iowan Old Style', Georgia, serif">Book serif</option>
@@ -868,8 +1162,17 @@ function AppearancePanel({ preferences, onChange }: { preferences: ReaderPrefere
       <RangeControl label="Word spacing" value={preferences.wordSpacing} min={0} max={0.5} step={0.05} suffix=" em" onChange={(wordSpacing) => void onChange({ wordSpacing })} />
       <fieldset><legend>Columns</legend><div className="segmented-control"><button type="button" aria-pressed={preferences.columnCount === 1} onClick={() => void onChange({ columnCount: 1 })}>One</button><button type="button" aria-pressed={preferences.columnCount === 2} onClick={() => void onChange({ columnCount: 2 })}>Two</button></div></fieldset>
       <label>Alignment<select value={preferences.textAlign} onChange={(event) => void onChange({ textAlign: event.target.value as ReaderPreferencesRecord["textAlign"] })}><option value="start">Book default</option><option value="left">Left</option><option value="justify">Justified</option><option value="right">Right</option></select></label>
+      <fieldset className="accessibility-options"><legend>Accessibility</legend>
+        <ToggleControl label="Screen reader mode" detail="One continuous column with predictable navigation" checked={preferences.screenReaderMode} onChange={(screenReaderMode) => void onChange({ screenReaderMode })} />
+        <ToggleControl label="Reading ruler" detail="Track the current line with the pointer" checked={preferences.readingRuler} onChange={(readingRuler) => void onChange({ readingRuler })} />
+        <ToggleControl label="Reduce motion" detail="Turn pages without animated transitions" checked={preferences.reduceMotion} onChange={(reduceMotion) => void onChange({ reduceMotion })} />
+      </fieldset>
     </form>
   );
+}
+
+function ToggleControl({ label, detail, checked, onChange }: { label: string; detail: string; checked: boolean; onChange: (checked: boolean) => void }) {
+  return <label className="toggle-control"><span><strong>{label}</strong><small>{detail}</small></span><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /></label>;
 }
 
 function SearchPanel({ query, results, activeIndex, searching, onQuery, onSubmit, onNavigate }: { query: string; results: BookSearchResult[]; activeIndex: number; searching: boolean; onQuery: (value: string) => void; onSubmit: (event: React.FormEvent) => void; onNavigate: (index: number) => void }) {
@@ -965,6 +1268,14 @@ function Icon({ name }: { name: string }) {
     download: <><path d="M12 4v11M8 11l4 4 4-4M5 20h14" /></>,
     upload: <><path d="M12 20V9M8 13l4-4 4 4M5 4h14" /></>,
     return: <><path d="m9 7-5 5 5 5" /><path d="M4 12h10a5 5 0 0 1 5 5v2" /></>,
+    speaker: <><path d="M5 10v4h4l5 4V6l-5 4z" /><path d="M17 9a4 4 0 0 1 0 6M19 6a8 8 0 0 1 0 12" /></>,
+    play: <><path d="m9 6 9 6-9 6z" /></>,
+    pause: <><path d="M9 6v12M15 6v12" /></>,
+    stop: <><path d="M7 7h10v10H7z" /></>,
+    previous: <><path d="M6 6v12M18 7l-8 5 8 5z" /></>,
+    next: <><path d="M18 6v12M6 7l8 5-8 5z" /></>,
+    edit: <><path d="m4 20 4-1 11-11-3-3L5 16zM14 7l3 3" /></>,
+    copy: <><path d="M8 8h11v11H8zM5 16H4V5h11v1" /></>,
   };
   return <svg viewBox="0 0 24 24" aria-hidden="true">{paths[name] ?? paths.book}</svg>;
 }
@@ -1030,9 +1341,27 @@ function toReadiumPreferences(preferences: ReaderPreferencesRecord) {
 }
 
 function themeColors(theme: ReaderPreferencesRecord["theme"]) {
+  if (theme === "contrast") return { background: "#000000", text: "#ffffff", link: "#7dd3fc", visited: "#f0abfc", selection: "#ffe600" };
   if (theme === "night") return { background: "#1b1c1a", text: "#ecebe5", link: "#b9d7c4", visited: "#c7b7dd", selection: "#685b25" };
   if (theme === "sepia") return { background: "#eee4cf", text: "#3c3328", link: "#315c4a", visited: "#704c71", selection: "#e2c966" };
   return { background: "#fbfaf6", text: "#222722", link: "#2f6148", visited: "#6b4b74", selection: "#f1d76a" };
+}
+
+function parseTags(value: string) {
+  const tags = [...new Set(value.split(",").map((tag) => tag.trim()).filter(Boolean))].slice(0, 50);
+  return tags.length ? tags : undefined;
+}
+
+function framePublicationPath(source: string, bookId: string) {
+  try {
+    const marker = `/__books/${encodeURIComponent(bookId)}/`;
+    const path = new URL(source).pathname;
+    const index = path.indexOf(marker);
+    if (index < 0) return undefined;
+    return decodeURIComponent(path.slice(index + marker.length));
+  } catch {
+    return undefined;
+  }
 }
 
 function annotationColor(color: AnnotationRecord["color"]) {
