@@ -48,6 +48,7 @@ describe("library backup", () => {
       updatedAt: 10,
     });
     await db.preferences.update(imported.book.id, { theme: "night", fontSize: 130 });
+    await db.sessions.put({ id: "session-1", bookId: imported.book.id, startedAt: 100, endedAt: 1_000, startProgress: 0.1, endProgress: 0.42 });
 
     const backup = await createLibraryBackup();
     expect(backup.bookCount).toBe(1);
@@ -63,6 +64,7 @@ describe("library backup", () => {
     expect(await db.books.get(imported.book.id)).toMatchObject({ title: "Backup Book", progress: 0.42 });
     expect(await db.annotations.get("note-1")).toMatchObject({ note: "Important", bookId: imported.book.id });
     expect(await db.preferences.get(imported.book.id)).toMatchObject({ theme: "night", fontSize: 130 });
+    expect(await db.sessions.get("session-1")).toMatchObject({ bookId: imported.book.id, endProgress: 0.42 });
     expect(await db.resources.get([imported.book.id, "__source__.epub"])).toBeDefined();
   });
 

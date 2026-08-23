@@ -2,7 +2,7 @@ import { strFromU8, unzipSync, zipSync } from "fflate";
 import { Locator } from "@readium/shared";
 import { db, DEFAULT_PREFERENCES } from "./db";
 import { importEpub } from "./epub";
-import type { AnnotationRecord, BookRecord, ReaderPreferencesRecord } from "./types";
+import type { AnnotationRecord, BookRecord, ReaderPreferencesRecord, ReadingSessionRecord } from "./types";
 
 const BACKUP_FORMAT = "better-epub-backup";
 const BACKUP_VERSION = 1;
@@ -16,6 +16,7 @@ interface BackupBookState {
   book: BookRecord;
   annotations: AnnotationRecord[];
   preferences: ReaderPreferencesRecord;
+  sessions?: ReadingSessionRecord[];
 }
 
 interface BackupManifest {
@@ -32,10 +33,11 @@ export async function createLibraryBackup() {
   const states: BackupBookState[] = [];
 
   for (const book of books) {
-    const [source, annotations, storedPreferences] = await Promise.all([
+    const [source, annotations, storedPreferences, sessions] = await Promise.all([
       db.resources.get([book.id, "__source__.epub"]),
       db.annotations.where("bookId").equals(book.id).toArray(),
       db.preferences.get(book.id),
+      db.sessions.where("bookId").equals(book.id).toArray(),
     ]);
     if (!source) throw new Error(`The original EPUB for “${book.title}” is missing.`);
     const sourcePath = `books/${book.id}.epub`;
@@ -45,6 +47,7 @@ export async function createLibraryBackup() {
       book,
       annotations,
       preferences: storedPreferences ?? { bookId: book.id, ...DEFAULT_PREFERENCES },
+      sessions,
     });
   }
 
@@ -106,20 +109,42 @@ export async function restoreLibraryBackup(file: File) {
     const resources = imported.resources.map((resource) => ({ ...resource, bookId }));
     const annotations = normalizeAnnotations(state.annotations, bookId);
     const preferences = normalizePreferences(state.preferences, bookId);
+    const sessions = normalizeSessions(state.sessions, bookId);
 
-    await db.transaction("rw", db.books, db.resources, db.annotations, db.preferences, async () => {
+    await db.transaction("rw", [db.books, db.resources, db.annotations, db.preferences, db.sessions], async () => {
       await Promise.all([
         db.resources.where("bookId").equals(bookId).delete(),
         db.annotations.where("bookId").equals(bookId).delete(),
+        db.sessions.where("bookId").equals(bookId).delete(),
       ]);
       await db.books.put(restoredBook);
       await db.resources.bulkPut(resources);
       if (annotations.length) await db.annotations.bulkPut(annotations);
       await db.preferences.put(preferences);
+      if (sessions.length) await db.sessions.bulkPut(sessions);
     });
     restored += 1;
   }
   return restored;
+}
+
+function normalizeSessions(value: unknown, bookId: string): ReadingSessionRecord[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item): ReadingSessionRecord[] => {
+    if (!item || typeof item !== "object") return [];
+    const session = item as Partial<ReadingSessionRecord>;
+    const startedAt = finiteNumber(session.startedAt, 0);
+    const endedAt = finiteNumber(session.endedAt, 0);
+    if (!session.id || startedAt <= 0 || endedAt < startedAt) return [];
+    return [{
+      id: String(session.id),
+      bookId,
+      startedAt,
+      endedAt,
+      startProgress: clamp(finiteNumber(session.startProgress, 0), 0, 1),
+      endProgress: clamp(finiteNumber(session.endProgress, 0), 0, 1),
+    }];
+  });
 }
 
 function parseManifest(source: string): BackupManifest {
