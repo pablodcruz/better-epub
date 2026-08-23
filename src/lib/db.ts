@@ -17,6 +17,9 @@ export const DEFAULT_PREFERENCES: Omit<ReaderPreferencesRecord, "bookId"> = {
   pageGutter: 24,
   columnCount: 1,
   textAlign: "start",
+  reduceMotion: false,
+  screenReaderMode: false,
+  readingRuler: false,
 };
 
 class BetterEpubDatabase extends Dexie {
@@ -83,12 +86,8 @@ export async function updateBook(bookId: string, patch: Partial<Omit<BookRecord,
 }
 
 export async function getPreferences(bookId: string) {
-  return (
-    (await db.preferences.get(bookId)) ?? {
-      bookId,
-      ...DEFAULT_PREFERENCES,
-    }
-  );
+  const stored = await db.preferences.get(bookId);
+  return { bookId, ...DEFAULT_PREFERENCES, ...stored };
 }
 
 export async function requestPersistentStorage() {

@@ -158,6 +158,7 @@ function normalizeAnnotations(value: unknown, bookId: string): AnnotationRecord[
       quote: typeof annotation.quote === "string" ? annotation.quote : undefined,
       note: typeof annotation.note === "string" ? annotation.note : undefined,
       color: ["yellow", "green", "blue", "pink"].includes(annotation.color ?? "") ? annotation.color : undefined,
+      tags: Array.isArray(annotation.tags) ? annotation.tags.filter((tag): tag is string => typeof tag === "string").slice(0, 50) : undefined,
       createdAt: finiteNumber(annotation.createdAt, Date.now()),
       updatedAt: finiteNumber(annotation.updatedAt, Date.now()),
     }];
@@ -169,7 +170,7 @@ function normalizePreferences(value: Partial<ReaderPreferencesRecord> | undefine
   return {
     bookId,
     flow: preferences.flow === "scrolled" ? "scrolled" : "paginated",
-    theme: ["paper", "sepia", "night"].includes(preferences.theme ?? "") ? preferences.theme! : DEFAULT_PREFERENCES.theme,
+    theme: ["paper", "sepia", "night", "contrast"].includes(preferences.theme ?? "") ? preferences.theme! : DEFAULT_PREFERENCES.theme,
     fontFamily: typeof preferences.fontFamily === "string" ? preferences.fontFamily.slice(0, 200) : DEFAULT_PREFERENCES.fontFamily,
     fontSize: clamp(finiteNumber(preferences.fontSize, DEFAULT_PREFERENCES.fontSize), 75, 200),
     lineHeight: clamp(finiteNumber(preferences.lineHeight, DEFAULT_PREFERENCES.lineHeight), 1.1, 2.2),
@@ -178,6 +179,9 @@ function normalizePreferences(value: Partial<ReaderPreferencesRecord> | undefine
     pageGutter: clamp(finiteNumber(preferences.pageGutter, DEFAULT_PREFERENCES.pageGutter), 0, 64),
     columnCount: preferences.columnCount === 2 ? 2 : 1,
     textAlign: ["start", "left", "right", "justify"].includes(preferences.textAlign ?? "") ? preferences.textAlign! : DEFAULT_PREFERENCES.textAlign,
+    reduceMotion: preferences.reduceMotion === true,
+    screenReaderMode: preferences.screenReaderMode === true,
+    readingRuler: preferences.readingRuler === true,
   };
 }
 

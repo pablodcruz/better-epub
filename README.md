@@ -10,13 +10,16 @@ Public reader: **https://better-epub.rweb.site/**
 - EPUB package, metadata, spine, cover, and navigation parsing
 - Readium TypeScript Toolkit and Readium CSS rendering
 - Paginated and continuous reading modes
-- One- and two-column layouts, typography, spacing, alignment, and themes
+- One- and two-column layouts, typography, spacing, alignment, reading presets, and four themes
 - Durable reading position, reading progress, and per-book preferences
 - Table of contents and exact-occurrence book search with highlighted results
-- Highlights, notes, bookmarks, and one-step return after non-linear navigation
+- Highlights, editable notes, colors, tags, notebook filters, bookmarks, and one-step return after non-linear navigation
 - Keyboard page navigation, bookmarking, and touch swipes
 - Center-tap immersive reading, progress scrubbing, and estimated time remaining
-- Markdown and JSON annotation export
+- Markdown, JSON, and experimental W3C EPUB annotation-set export, plus JSON and `.annotations` import
+- System-voice read aloud with sentence highlighting, voice/speed controls, and footnote skipping
+- In-reader footnote popovers that keep the current reading position
+- High-contrast, screen-reader, reduced-motion, and pointer reading-ruler modes
 - Complete library backup and restore, including source EPUBs, reading progress, preferences, and annotations
 - Original EPUB download for individual-book backup
 - IndexedDB storage with persistent-storage status
@@ -67,7 +70,8 @@ The selected domain is recorded in `public/CNAME` so it is included in every bui
 | Left arrow, Page Up | Previous page |
 | B | Bookmark current location |
 | Ctrl/Command + F | Search this book |
-| Escape | Restore the controls from immersive reading |
+| L | Start, pause, or resume read aloud |
+| Escape | Close an open reading overlay or restore immersive controls |
 
 ## Known MVP boundaries
 
@@ -76,3 +80,5 @@ The selected domain is recorded in `public/CNAME` so it is included in every bui
 - File-handler installation is a Chromium enhancement; drag-and-drop works across the supported web experience.
 - Share-target importing depends on PWA and operating-system support; the file picker remains available everywhere else.
 - Browser storage can still be removed explicitly by the user, even when persistent storage is granted.
+- Read aloud uses voices installed by the operating system and therefore sounds different across devices.
+- EPUB annotation-set interoperability follows the experimental W3C Working Draft and may evolve.
