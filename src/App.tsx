@@ -14,6 +14,8 @@ import {
   removeBook,
   requestPersistentStorage,
   saveImportedBook,
+  subscribeLibraryChanges,
+  notifyLibraryChange,
   updateBook,
 } from "./lib/db";
 import { importEpub } from "./lib/epub";
@@ -35,6 +37,7 @@ import type {
   BookRecord,
   ManifestLinkJson,
   ReaderPreferencesRecord,
+  ReadingSessionRecord,
 } from "./lib/types";
 
 type AppRoute = { screen: "library" } | { screen: "reader"; bookId: string };
@@ -44,10 +47,31 @@ type InstallPromptEvent = Event & {
   userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
 };
 type ReadAloudStatus = "idle" | "loading" | "playing" | "paused";
+type LibraryFilter = "all" | "unread" | "reading" | "finished";
+type LibrarySort = "recent" | "title" | "author" | "progress";
+interface CatalogBook {
+  id: string;
+  title: string;
+  author: string;
+  description: string;
+  category: string;
+  fileName: string;
+  downloadUrl: string;
+  pageUrl: string;
+}
+
+const FREE_BOOKS: CatalogBook[] = [
+  { id: "dracula", title: "Dracula", author: "Bram Stoker", category: "Gothic horror", description: "Letters, journals, and newspaper clippings assemble a foundational vampire story.", fileName: "bram-stoker_dracula.epub", downloadUrl: "https://standardebooks.org/ebooks/bram-stoker/dracula/downloads/bram-stoker_dracula.epub?source=download", pageUrl: "https://standardebooks.org/ebooks/bram-stoker/dracula" },
+  { id: "pride", title: "Pride and Prejudice", author: "Jane Austen", category: "Classic fiction", description: "A sharp comedy of manners about family, judgment, and unexpected affection.", fileName: "jane-austen_pride-and-prejudice.epub", downloadUrl: "https://standardebooks.org/ebooks/jane-austen/pride-and-prejudice/downloads/jane-austen_pride-and-prejudice.epub?source=download", pageUrl: "https://standardebooks.org/ebooks/jane-austen/pride-and-prejudice" },
+  { id: "dorian", title: "The Picture of Dorian Gray", author: "Oscar Wilde", category: "Gothic fiction", description: "A beautiful portrait bears the cost of its subject’s pursuit of eternal youth.", fileName: "oscar-wilde_the-picture-of-dorian-gray.epub", downloadUrl: "https://standardebooks.org/ebooks/oscar-wilde/the-picture-of-dorian-gray/downloads/oscar-wilde_the-picture-of-dorian-gray.epub?source=download", pageUrl: "https://standardebooks.org/ebooks/oscar-wilde/the-picture-of-dorian-gray" },
+  { id: "sherlock", title: "The Adventures of Sherlock Holmes", author: "Arthur Conan Doyle", category: "Mystery", description: "Twelve cases showcase Holmes and Watson at their most observant and inventive.", fileName: "arthur-conan-doyle_the-adventures-of-sherlock-holmes.epub", downloadUrl: "https://standardebooks.org/ebooks/arthur-conan-doyle/the-adventures-of-sherlock-holmes/downloads/arthur-conan-doyle_the-adventures-of-sherlock-holmes.epub?source=download", pageUrl: "https://standardebooks.org/ebooks/arthur-conan-doyle/the-adventures-of-sherlock-holmes" },
+  { id: "frankenstein", title: "Frankenstein", author: "Mary Shelley", category: "Science fiction", description: "An ambitious experiment gives life to a being its creator immediately rejects.", fileName: "mary-shelley_frankenstein.epub", downloadUrl: "https://standardebooks.org/ebooks/mary-shelley/frankenstein/downloads/mary-shelley_frankenstein.epub?source=download", pageUrl: "https://standardebooks.org/ebooks/mary-shelley/frankenstein" },
+];
 
 export default function App() {
   const [route, setRoute] = useState<AppRoute>({ screen: "library" });
   const [books, setBooks] = useState<BookRecord[]>([]);
+  const [sessions, setSessions] = useState<ReadingSessionRecord[]>([]);
   const [importing, setImporting] = useState(false);
   const [message, setMessage] = useState("");
   const [managingLibrary, setManagingLibrary] = useState(false);
@@ -55,17 +79,21 @@ export default function App() {
   const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
 
   const refresh = useCallback(async () => {
-    const [nextBooks, nextStorage] = await Promise.all([
+    const [nextBooks, nextStorage, nextSessions] = await Promise.all([
       db.books.orderBy("lastOpenedAt").reverse().toArray(),
       getStorageStatus(),
+      db.sessions.orderBy("startedAt").reverse().limit(500).toArray(),
     ]);
     setBooks(nextBooks);
     setStorageStatus(nextStorage);
+    setSessions(nextSessions);
   }, []);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => subscribeLibraryChanges(() => void refresh()), [refresh]);
 
   useEffect(() => {
     const handleInstallPrompt = (event: Event) => {
@@ -122,7 +150,7 @@ export default function App() {
     try {
       const backup = await createLibraryBackup();
       downloadBlob(backup.blob, backup.name);
-      setMessage(`${backup.bookCount} ${backup.bookCount === 1 ? "book" : "books"} backed up with reading progress, preferences, and notes.`);
+      setMessage(`${backup.bookCount} ${backup.bookCount === 1 ? "book" : "books"} backed up with reading progress, history, preferences, and notes.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "The library backup could not be created.");
     } finally {
@@ -137,7 +165,7 @@ export default function App() {
       const count = await restoreLibraryBackup(file);
       await requestPersistentStorage();
       await refresh();
-      setMessage(`${count} ${count === 1 ? "book" : "books"} restored with reading progress, preferences, and notes.`);
+      setMessage(`${count} ${count === 1 ? "book" : "books"} restored with reading progress, history, preferences, and notes.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "The library backup could not be restored.");
     } finally {
@@ -175,6 +203,7 @@ export default function App() {
   return (
     <LibraryView
       books={books}
+      sessions={sessions}
       importing={importing}
       message={message}
       storageStatus={storageStatus}
@@ -201,6 +230,7 @@ export default function App() {
 
 function LibraryView({
   books,
+  sessions,
   importing,
   message,
   storageStatus,
@@ -215,10 +245,11 @@ function LibraryView({
   onRestore,
 }: {
   books: BookRecord[];
+  sessions: ReadingSessionRecord[];
   importing: boolean;
   message: string;
   storageStatus: StorageStatus;
-  onImport: (files: FileList | File[]) => void;
+  onImport: (files: FileList | File[]) => void | Promise<void>;
   onOpen: (bookId: string) => void;
   onDelete: (book: BookRecord) => void;
   canInstall: boolean;
@@ -231,12 +262,58 @@ function LibraryView({
   const inputRef = useRef<HTMLInputElement>(null);
   const restoreInputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
+  const [libraryQuery, setLibraryQuery] = useState("");
+  const [libraryFilter, setLibraryFilter] = useState<LibraryFilter>("all");
+  const [librarySort, setLibrarySort] = useState<LibrarySort>("recent");
+  const [discovering, setDiscovering] = useState(false);
+  const [catalogImporting, setCatalogImporting] = useState("");
+  const [catalogMessage, setCatalogMessage] = useState("");
+  const visibleBooks = useMemo(() => {
+    const needle = libraryQuery.trim().toLocaleLowerCase();
+    const filtered = books.filter((book) => {
+      if (needle && !`${book.title} ${book.author}`.toLocaleLowerCase().includes(needle)) return false;
+      if (libraryFilter === "unread") return book.progress <= 0;
+      if (libraryFilter === "reading") return book.progress > 0 && book.progress < 0.98;
+      if (libraryFilter === "finished") return book.progress >= 0.98;
+      return true;
+    });
+    return [...filtered].sort((left, right) => {
+      if (librarySort === "title") return left.title.localeCompare(right.title);
+      if (librarySort === "author") return left.author.localeCompare(right.author);
+      if (librarySort === "progress") return right.progress - left.progress;
+      return right.lastOpenedAt - left.lastOpenedAt;
+    });
+  }, [books, libraryFilter, libraryQuery, librarySort]);
+  const weekStart = Date.now() - 7 * 24 * 60 * 60 * 1_000;
+  const readingMinutes = Math.round(sessions.filter((session) => session.endedAt >= weekStart).reduce((total, session) => total + Math.min(6 * 60 * 60 * 1_000, Math.max(0, session.endedAt - session.startedAt)), 0) / 60_000);
+  const inProgress = books.filter((book) => book.progress > 0 && book.progress < 0.98).length;
+  const finished = books.filter((book) => book.progress >= 0.98).length;
+
+  const importCatalogBook = async (catalogBook: CatalogBook) => {
+    setCatalogImporting(catalogBook.id);
+    setCatalogMessage(`Downloading “${catalogBook.title}”…`);
+    try {
+      const response = await fetch(catalogBook.downloadUrl);
+      if (!response.ok) throw new Error(`The provider returned ${response.status}.`);
+      const blob = await response.blob();
+      if (blob.size > 250 * 1024 * 1024) throw new Error("This EPUB exceeds the 250 MB import limit.");
+      await onImport([new File([blob], catalogBook.fileName, { type: "application/epub+zip" })]);
+      setCatalogMessage(`“${catalogBook.title}” is now in your local library.`);
+    } catch (reason) {
+      setCatalogMessage(reason instanceof Error ? reason.message : "The free book could not be imported.");
+    } finally {
+      setCatalogImporting("");
+    }
+  };
 
   return (
     <div className="app-shell library-shell">
       <header className="library-header">
         <Brand />
         <div className="library-actions">
+          <button className="secondary-button" type="button" onClick={() => setDiscovering(true)}>
+            <Icon name="compass" /> Discover
+          </button>
           {canInstall && (
             <button className="secondary-button" type="button" onClick={onInstall}>
               <Icon name="download" /> Install app
@@ -289,6 +366,12 @@ function LibraryView({
 
         {message && <p className="status-message" role="status">{message}</p>}
 
+        {books.length > 0 && <section className="reading-overview" aria-label="Reading overview">
+          <div><span>{inProgress}</span><small>In progress</small></div>
+          <div><span>{readingMinutes}</span><small>Minutes this week</small></div>
+          <div><span>{finished}</span><small>Finished</small></div>
+        </section>}
+
         {books.length === 0 ? (
           <section
             className={`drop-zone ${dragging ? "is-dragging" : ""}`}
@@ -308,6 +391,7 @@ function LibraryView({
             <button className="secondary-button" type="button" onClick={() => inputRef.current?.click()}>
               Choose files
             </button>
+            <button className="text-button" type="button" onClick={() => setDiscovering(true)}>Or discover a free classic</button>
           </section>
         ) : (
           <section aria-label="Imported books">
@@ -315,18 +399,35 @@ function LibraryView({
               <h2>Continue reading</h2>
               <span>{books.length} {books.length === 1 ? "book" : "books"}</span>
             </div>
+            <div className="library-controls">
+              <label className="library-search"><Icon name="search" /><span className="visually-hidden">Search your library</span><input value={libraryQuery} onChange={(event) => setLibraryQuery(event.target.value)} placeholder="Search title or author" /></label>
+              <div className="library-filter" role="group" aria-label="Filter library">{(["all", "unread", "reading", "finished"] as const).map((filter) => <button key={filter} type="button" aria-pressed={libraryFilter === filter} onClick={() => setLibraryFilter(filter)}>{filter}</button>)}</div>
+              <label className="library-sort"><span className="visually-hidden">Sort library</span><select value={librarySort} onChange={(event) => setLibrarySort(event.target.value as LibrarySort)}><option value="recent">Recently opened</option><option value="title">Title</option><option value="author">Author</option><option value="progress">Progress</option></select></label>
+            </div>
+            {visibleBooks.length === 0 ? <div className="empty-library-filter"><h3>No books found</h3><p>Try a different search or reading status.</p><button className="secondary-button" type="button" onClick={() => { setLibraryQuery(""); setLibraryFilter("all"); }}>Clear filters</button></div> :
             <div className="book-grid">
-              {books.map((book) => (
+              {visibleBooks.map((book) => (
                 <BookCard key={book.id} book={book} onOpen={() => onOpen(book.id)} onDelete={() => onDelete(book)} />
               ))}
               <button className="add-book-card" type="button" onClick={() => inputRef.current?.click()}>
                 <Icon name="plus" />
                 <span>Add another book</span>
               </button>
-            </div>
+            </div>}
           </section>
         )}
       </main>
+      {discovering && <div className="modal-backdrop discovery-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !catalogImporting) setDiscovering(false); }}>
+        <section className="discovery-dialog" role="dialog" aria-modal="true" aria-labelledby="discovery-title">
+          <div className="discovery-heading"><div><p className="eyebrow">PUBLIC-DOMAIN STARTER SHELF</p><h2 id="discovery-title">Discover a classic</h2><p>Import a carefully produced EPUB directly into this browser.</p></div><button autoFocus className="icon-button" type="button" disabled={!!catalogImporting} onClick={() => setDiscovering(false)} aria-label="Close discovery"><Icon name="close" /></button></div>
+          {catalogMessage && <p className="status-message" role="status">{catalogMessage}</p>}
+          <div className="discovery-grid">{FREE_BOOKS.map((catalogBook, index) => <article key={catalogBook.id} className={`discovery-card discovery-tone-${index + 1}`}>
+            <div className="discovery-cover"><span>{catalogBook.title}</span></div>
+            <div><small>{catalogBook.category}</small><h3>{catalogBook.title}</h3><p className="discovery-author">{catalogBook.author}</p><p>{catalogBook.description}</p><div className="discovery-actions"><button className="primary-button" type="button" disabled={!!catalogImporting} onClick={() => void importCatalogBook(catalogBook)}>{catalogImporting === catalogBook.id ? "Importing…" : "Import free EPUB"}</button><a href={catalogBook.pageUrl} target="_blank" rel="noreferrer">Details</a></div></div>
+          </article>)}</div>
+          <p className="catalog-credit">Books are provided by <a href="https://standardebooks.org/" target="_blank" rel="noreferrer">Standard Ebooks</a>, which publishes free, carefully formatted public-domain editions. Copyright status can differ by country; check your local law before downloading.</p>
+        </section>
+      </div>}
     </div>
   );
 }
@@ -346,7 +447,7 @@ function BookCard({ book, onOpen, onDelete }: { book: BookRecord; onOpen: () => 
           <div className="progress-track" aria-label={`${Math.round(book.progress * 100)}% complete`}>
             <span style={{ width: `${Math.round(book.progress * 100)}%` }} />
           </div>
-          <small>{book.progress ? `${Math.round(book.progress * 100)}% complete` : "Ready to read"}</small>
+          <small>{book.progress ? `${Math.round(book.progress * 100)}% complete` : "Ready to read"} · {relativeTime(book.lastOpenedAt)}</small>
         </div>
       </button>
       <div className="card-actions">
@@ -380,6 +481,7 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
   const speechSessionRef = useRef(0);
   const speechQueueRef = useRef<SpeechSegment[]>([]);
   const speechIndexRef = useRef(0);
+  const progressRef = useRef(book.progress);
   const [preferences, setPreferences] = useState<ReaderPreferencesRecord | null>(null);
   const [annotations, setAnnotations] = useState<AnnotationRecord[]>([]);
   const [selection, setSelection] = useState<BasicTextSelection | null>(null);
@@ -405,6 +507,31 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
   const [speechRate, setSpeechRate] = useState(1);
   const [speechVoices, setSpeechVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [speechVoiceUri, setSpeechVoiceUri] = useState("");
+
+  useEffect(() => {
+    const session: ReadingSessionRecord = {
+      id: crypto.randomUUID(),
+      bookId: book.id,
+      startedAt: Date.now(),
+      endedAt: Date.now(),
+      startProgress: book.progress,
+      endProgress: book.progress,
+    };
+    const persist = () => {
+      session.endedAt = Date.now();
+      session.endProgress = progressRef.current;
+      if (session.endedAt - session.startedAt < 5_000) return;
+      void db.sessions.put({ ...session }).then(() => notifyLibraryChange(book.id));
+    };
+    const handleVisibility = () => { if (document.visibilityState === "hidden") persist(); };
+    document.addEventListener("visibilitychange", handleVisibility);
+    window.addEventListener("pagehide", persist);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+      window.removeEventListener("pagehide", persist);
+      persist();
+    };
+  }, [book.id]);
 
   useEffect(() => {
     void Promise.all([
@@ -482,6 +609,7 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
             saveTimer = window.setTimeout(() => {
               const progress = locator.locations.totalProgression
                 ?? Math.max(0, (locator.locations.position ?? 1) - 1) / Math.max(positions.length, 1);
+              progressRef.current = Math.min(1, Math.max(0, progress));
               void updateBook(book.id, {
                 lastLocator: locator.serialize(),
                 progress: Math.min(1, Math.max(0, progress)),
@@ -1276,6 +1404,7 @@ function Icon({ name }: { name: string }) {
     next: <><path d="M18 6v12M6 7l8 5-8 5z" /></>,
     edit: <><path d="m4 20 4-1 11-11-3-3L5 16zM14 7l3 3" /></>,
     copy: <><path d="M8 8h11v11H8zM5 16H4V5h11v1" /></>,
+    compass: <><circle cx="12" cy="12" r="9" /><path d="m15.5 8.5-2 5-5 2 2-5z" /></>,
   };
   return <svg viewBox="0 0 24 24" aria-hidden="true">{paths[name] ?? paths.book}</svg>;
 }
@@ -1398,6 +1527,18 @@ function formatBytes(bytes: number) {
   if (bytes < 1024 * 1024) return `${Math.max(0, bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
+}
+
+function relativeTime(timestamp: number) {
+  const elapsed = Math.max(0, Date.now() - timestamp);
+  const days = Math.floor(elapsed / 86_400_000);
+  if (days === 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 30) return `${days} days ago`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months} ${months === 1 ? "month" : "months"} ago`;
+  const years = Math.floor(months / 12);
+  return `${years} ${years === 1 ? "year" : "years"} ago`;
 }
 
 async function countBookWords(book: BookRecord) {

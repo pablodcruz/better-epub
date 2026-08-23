@@ -7,11 +7,14 @@ Public reader: **https://better-epub.rweb.site/**
 ## Current capabilities
 
 - Local drag-and-drop and file-picker imports
+- One-click imports from a curated public-domain starter shelf powered by Standard Ebooks
 - EPUB package, metadata, spine, cover, and navigation parsing
 - Readium TypeScript Toolkit and Readium CSS rendering
 - Paginated and continuous reading modes
 - One- and two-column layouts, typography, spacing, alignment, reading presets, and four themes
 - Durable reading position, reading progress, and per-book preferences
+- Search, reading-status filters, sorting, and a local seven-day reading overview for the library
+- Local reading-session history and live library/progress refresh across open tabs
 - Table of contents and exact-occurrence book search with highlighted results
 - Highlights, editable notes, colors, tags, notebook filters, bookmarks, and one-step return after non-linear navigation
 - Keyboard page navigation, bookmarking, and touch swipes
@@ -30,7 +33,9 @@ Public reader: **https://better-epub.rweb.site/**
 
 EPUB files are untrusted archives. Imports preflight archive entries before decompression and enforce archive, resource-count, expanded-size, per-resource, normalized-path, and XML-entity limits. Remote and absolute publication paths are disabled. Reading copies of HTML, XHTML, and SVG resources are sanitized before storage to remove authored scripts, event handlers, active embeds, refresh directives, and scriptable URLs; the untouched archive is retained only for explicit backup. Direct publication responses also carry a restrictive CSP, sandbox, and permissions policy, while Readium's generated frames prevent publication network access and forms.
 
-The source EPUB and extracted resources are stored under the `better-epub` browser origin in IndexedDB. Browser storage is device- and origin-specific. Users should periodically use **Backup** to download a complete, portable Better ePub library backup.
+The source EPUB, extracted resources, preferences, annotations, and reading-session history are stored under the `better-epub` browser origin in IndexedDB. Browser storage is device- and origin-specific. Users should periodically use **Backup** to download a complete, portable Better ePub library backup.
+
+The optional discovery shelf is the only feature that fetches from another origin. A selected public-domain EPUB is downloaded directly from Standard Ebooks into the browser and then follows the same local import path as a file selected from disk. Better ePub does not send the local library or reading activity to that provider.
 
 ## Development
 
@@ -82,3 +87,4 @@ The selected domain is recorded in `public/CNAME` so it is included in every bui
 - Browser storage can still be removed explicitly by the user, even when persistent storage is granted.
 - Read aloud uses voices installed by the operating system and therefore sounds different across devices.
 - EPUB annotation-set interoperability follows the experimental W3C Working Draft and may evolve.
+- Curated discovery titles are believed to be public domain in the United States; copyright status may differ in other countries.

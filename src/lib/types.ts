@@ -65,6 +65,15 @@ export interface AnnotationRecord {
   updatedAt: number;
 }
 
+export interface ReadingSessionRecord {
+  id: string;
+  bookId: string;
+  startedAt: number;
+  endedAt: number;
+  startProgress: number;
+  endProgress: number;
+}
+
 export interface ReaderPreferencesRecord {
   bookId: string;
   flow: ReaderFlow;

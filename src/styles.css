@@ -122,6 +122,11 @@ button.storage-badge { cursor: pointer; }
 .storage-badge.is-safe svg { color: var(--accent); }
 
 .status-message { background: var(--accent-soft); border: 1px solid #bad1c1; border-radius: 10px; margin-bottom: 24px; padding: 12px 14px; }
+.text-button { background: transparent; border: 0; color: var(--accent); cursor: pointer; font-weight: 600; padding: 10px; }
+.reading-overview { display: grid; gap: 10px; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: -18px 0 34px; max-width: 650px; }
+.reading-overview > div { align-items: baseline; background: rgba(255,255,255,.52); border: 1px solid var(--border); border-radius: 11px; display: flex; gap: 8px; padding: 11px 13px; }
+.reading-overview span { font-family: Charter, Georgia, serif; font-size: 1.35rem; font-weight: 700; }
+.reading-overview small { color: var(--muted); }
 
 .drop-zone {
   align-items: center;
@@ -143,6 +148,18 @@ button.storage-badge { cursor: pointer; }
 .section-heading { align-items: baseline; display: flex; justify-content: space-between; margin-bottom: 20px; }
 .section-heading h2 { margin: 0; }
 .section-heading span { color: var(--muted); font-size: 0.85rem; }
+.library-controls { align-items: center; display: grid; gap: 10px; grid-template-columns: minmax(190px, 1fr) auto auto; margin-bottom: 22px; }
+.library-search { align-items: center; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; display: flex; gap: 7px; min-height: 42px; padding: 0 11px; }
+.library-search input { background: transparent; border: 0; color: var(--text); min-width: 0; outline: 0; width: 100%; }
+.library-filter { display: flex; }
+.library-filter button { background: var(--panel); border: 1px solid var(--border); cursor: pointer; padding: 10px; text-transform: capitalize; }
+.library-filter button:first-child { border-radius: 9px 0 0 9px; }
+.library-filter button:last-child { border-radius: 0 9px 9px 0; }
+.library-filter button + button { border-left: 0; }
+.library-filter button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); }
+.library-sort select { background: var(--panel); border: 1px solid var(--border); border-radius: 9px; color: var(--text); min-height: 42px; padding: 0 9px; }
+.empty-library-filter { background: rgba(255,255,255,.42); border: 1px dashed var(--border); border-radius: 16px; padding: 44px; text-align: center; }
+.empty-library-filter p { color: var(--muted); }
 .book-grid { display: grid; gap: clamp(18px, 3vw, 30px); grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .book-card, .add-book-card { min-width: 0; position: relative; }
 .book-open { background: transparent; border: 0; cursor: pointer; display: block; padding: 0; text-align: left; width: 100%; }
@@ -180,6 +197,28 @@ button.storage-badge { cursor: pointer; }
 
 .add-book-card { align-items: center; aspect-ratio: 3 / 4; background: rgba(255,255,255,.35); border: 2px dashed var(--border); border-radius: 12px; color: var(--muted); cursor: pointer; display: flex; flex-direction: column; gap: 10px; justify-content: center; }
 .add-book-card:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+
+.discovery-backdrop { align-items: flex-start; overflow-y: auto; }
+.discovery-dialog { background: var(--canvas); border: 1px solid var(--border); border-radius: 20px; box-shadow: 0 24px 80px rgba(0,0,0,.3); margin: 4vh auto; max-width: 1100px; padding: clamp(18px, 3vw, 34px); width: 100%; }
+.discovery-heading { align-items: flex-start; display: flex; gap: 20px; justify-content: space-between; margin-bottom: 24px; }
+.discovery-heading h2 { font-family: Charter, Georgia, serif; font-size: clamp(1.8rem, 4vw, 3rem); margin-bottom: 7px; }
+.discovery-heading p:last-child { color: var(--muted); margin: 0; }
+.discovery-grid { display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.discovery-card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; display: grid; gap: 15px; grid-template-columns: 112px minmax(0, 1fr); padding: 13px; }
+.discovery-cover { align-items: flex-end; aspect-ratio: 3 / 4; background: linear-gradient(145deg, #5d6758, #24382b); border-radius: 4px 9px 9px 4px; box-shadow: 0 9px 22px var(--shadow); color: #fff; display: flex; font-family: Charter, Georgia, serif; font-weight: 700; padding: 11px; }
+.discovery-tone-2 .discovery-cover { background: linear-gradient(145deg, #976a78, #472934); }
+.discovery-tone-3 .discovery-cover { background: linear-gradient(145deg, #88805f, #3f3924); }
+.discovery-tone-4 .discovery-cover { background: linear-gradient(145deg, #577287, #243644); }
+.discovery-tone-5 .discovery-cover { background: linear-gradient(145deg, #65706c, #273330); }
+.discovery-card > div:last-child { min-width: 0; }
+.discovery-card small { color: var(--accent); font-size: .66rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.discovery-card h3 { margin: 5px 0 2px; }
+.discovery-card p { color: var(--muted); font-size: .78rem; line-height: 1.45; margin-bottom: 10px; }
+.discovery-card .discovery-author { color: var(--text); font-weight: 600; }
+.discovery-actions { align-items: center; display: flex; gap: 10px; }
+.discovery-actions .primary-button { font-size: .76rem; min-height: 36px; padding: 7px 10px; }
+.discovery-actions a, .catalog-credit a { color: var(--accent); }
+.catalog-credit { color: var(--muted); font-size: .72rem; line-height: 1.5; margin: 20px 0 0; }
 
 .reader-app {
   --reader-bg: #fbfaf6;
@@ -338,6 +377,9 @@ button.storage-badge { cursor: pointer; }
   .book-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .tool-button span { display: none; }
   .reader-layout.has-panel { grid-template-columns: 280px minmax(0, 1fr); }
+  .library-controls { grid-template-columns: 1fr auto; }
+  .library-filter { grid-column: 1 / -1; grid-row: 2; }
+  .library-filter button { flex: 1; }
 }
 
 @media (max-width: 720px) {
@@ -345,6 +387,7 @@ button.storage-badge { cursor: pointer; }
   .library-actions { flex-wrap: wrap; justify-content: flex-end; }
   .library-intro { align-items: start; flex-direction: column; }
   .book-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .discovery-grid { grid-template-columns: 1fr; }
   .reader-header { grid-template-columns: auto minmax(0, 1fr); }
   .reader-tools { grid-column: 1 / -1; justify-content: space-around; }
   .tool-button { flex: 1; justify-content: center; }
@@ -366,13 +409,24 @@ button.storage-badge { cursor: pointer; }
   .library-header .primary-button svg { display: none; }
   .library-actions .secondary-button { padding: 8px; }
   .library-actions .secondary-button svg { display: none; }
-  .library-actions { display: grid; gap: 5px; grid-template-columns: repeat(4, minmax(0, 1fr)); width: 100%; }
+  .library-actions { display: grid; gap: 5px; grid-template-columns: repeat(auto-fit, minmax(68px, 1fr)); width: 100%; }
   .library-actions .primary-button,
   .library-actions .secondary-button { font-size: .76rem; min-width: 0; padding-inline: 4px; white-space: nowrap; }
   .library-main { padding: 40px 16px 60px; }
   .book-grid { gap: 18px 12px; }
   .generated-cover { font-size: 1.15rem; }
   .storage-badge { width: 100%; }
+  .reading-overview { gap: 6px; margin-top: -24px; }
+  .reading-overview > div { align-items: center; flex-direction: column; gap: 1px; padding: 9px 4px; text-align: center; }
+  .reading-overview small { font-size: .62rem; }
+  .library-controls { grid-template-columns: 1fr; }
+  .library-filter { grid-column: auto; grid-row: auto; overflow-x: auto; }
+  .library-filter button { font-size: .72rem; padding: 8px 6px; }
+  .library-sort select { width: 100%; }
+  .discovery-dialog { border-radius: 0; margin: 0; min-height: 100%; }
+  .discovery-card { grid-template-columns: 82px minmax(0, 1fr); }
+  .discovery-card p:not(.discovery-author) { display: none; }
+  .discovery-actions { align-items: flex-start; flex-direction: column; gap: 6px; }
   .tool-button span { display: none; }
   .selection-bar > div { flex-wrap: wrap; }
   .selection-options { align-items: stretch; flex-direction: column; }
