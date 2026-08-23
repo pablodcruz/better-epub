@@ -30,7 +30,15 @@ export default defineConfig(({ mode }) => ({
             action: "./?import=epub",
             accept: { "application/epub+zip": [".epub"] }
           }
-        ]
+        ],
+        share_target: {
+          action: "./?share-target=epub",
+          method: "POST",
+          enctype: "multipart/form-data",
+          params: {
+            files: [{ name: "epubs", accept: ["application/epub+zip", ".epub"] }]
+          }
+        }
       },
       injectManifest: {
         globPatterns: ["**/*.{js,css,html,svg,woff2}"]

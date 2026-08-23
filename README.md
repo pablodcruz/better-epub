@@ -4,7 +4,7 @@ Better ePub is a private, local-first EPUB 2 and EPUB 3 reader. Imported books a
 
 Public reader: **https://better-epub.rweb.site/**
 
-## Current MVP capabilities
+## Current capabilities
 
 - Local drag-and-drop and file-picker imports
 - EPUB package, metadata, spine, cover, and navigation parsing
@@ -12,19 +12,22 @@ Public reader: **https://better-epub.rweb.site/**
 - Paginated and continuous reading modes
 - One- and two-column layouts, typography, spacing, alignment, and themes
 - Durable reading position, reading progress, and per-book preferences
-- Table of contents, book search, highlights, notes, and bookmarks
+- Table of contents and exact-occurrence book search with highlighted results
+- Highlights, notes, bookmarks, and one-step return after non-linear navigation
 - Keyboard page navigation, bookmarking, and touch swipes
+- Center-tap immersive reading, progress scrubbing, and estimated time remaining
 - Markdown and JSON annotation export
-- Original EPUB download for backup
+- Complete library backup and restore, including source EPUBs, reading progress, preferences, and annotations
+- Original EPUB download for individual-book backup
 - IndexedDB storage with persistent-storage status
-- Installable PWA and offline app shell
+- Installable PWA, offline app shell, file handling, and supported-platform share-target importing
 - GitHub Pages deployment workflow
 
 ## Privacy and security model
 
 EPUB files are untrusted archives. Imports preflight archive entries before decompression and enforce archive, resource-count, expanded-size, per-resource, normalized-path, and XML-entity limits. Remote and absolute publication paths are disabled. Reading copies of HTML, XHTML, and SVG resources are sanitized before storage to remove authored scripts, event handlers, active embeds, refresh directives, and scriptable URLs; the untouched archive is retained only for explicit backup. Direct publication responses also carry a restrictive CSP, sandbox, and permissions policy, while Readium's generated frames prevent publication network access and forms.
 
-The source EPUB and extracted resources are stored under the `better-epub` browser origin in IndexedDB. Browser storage is device- and origin-specific. Users should keep their source EPUB files and export annotations regularly.
+The source EPUB and extracted resources are stored under the `better-epub` browser origin in IndexedDB. Browser storage is device- and origin-specific. Users should periodically use **Backup** to download a complete, portable Better ePub library backup.
 
 ## Development
 
@@ -64,11 +67,12 @@ The selected domain is recorded in `public/CNAME` so it is included in every bui
 | Left arrow, Page Up | Previous page |
 | B | Bookmark current location |
 | Ctrl/Command + F | Search this book |
+| Escape | Restore the controls from immersive reading |
 
 ## Known MVP boundaries
 
 - DRM-protected books are not supported.
 - KFX is not supported; DRM-free MOBI/AZW3 conversion is not yet bundled.
 - File-handler installation is a Chromium enhancement; drag-and-drop works across the supported web experience.
-- Search currently navigates to the matching chapter rather than the exact word occurrence.
+- Share-target importing depends on PWA and operating-system support; the file picker remains available everywhere else.
 - Browser storage can still be removed explicitly by the user, even when persistent storage is granted.

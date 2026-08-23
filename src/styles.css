@@ -98,7 +98,7 @@ h2 { font-size: 1.15rem; }
 .primary-button:hover { background: var(--accent); }
 .secondary-button { background: var(--panel); border: 1px solid var(--border); }
 .secondary-button:hover { background: var(--accent-soft); border-color: var(--accent); }
-.primary-button:disabled { cursor: progress; opacity: 0.65; }
+.primary-button:disabled, .secondary-button:disabled { cursor: progress; opacity: 0.65; }
 
 .library-main { margin: 0 auto; max-width: 1240px; padding: clamp(42px, 7vw, 90px) clamp(20px, 5vw, 64px) 80px; }
 .library-intro { align-items: end; display: flex; gap: 32px; justify-content: space-between; margin-bottom: 44px; }
@@ -191,10 +191,11 @@ button.storage-badge { cursor: pointer; }
   grid-template-rows: auto minmax(0, 1fr) auto;
   height: 100vh;
   overflow: hidden;
+  transition: grid-template-rows 180ms ease;
 }
 .reader-app.theme-sepia { --reader-bg: #eee4cf; --reader-text: #3c3328; --reader-chrome: #e6dac3; }
 .reader-app.theme-night { --reader-bg: #1b1c1a; --reader-text: #ecebe5; --reader-chrome: #22231f; --panel: #292a26; --border: #44463f; --muted: #aaa; --accent-soft: #33473b; }
-.reader-header { align-items: center; background: var(--reader-chrome); border-bottom: 1px solid var(--border); display: grid; gap: 14px; grid-template-columns: auto minmax(0, 1fr) auto; min-height: 62px; padding: 8px 14px; position: relative; z-index: 10; }
+.reader-header { align-items: center; background: var(--reader-chrome); border-bottom: 1px solid var(--border); display: grid; gap: 14px; grid-template-columns: auto minmax(0, 1fr) auto; min-height: 62px; overflow: hidden; padding: 8px 14px; position: relative; transition: opacity 140ms ease, min-height 180ms ease, padding 180ms ease; z-index: 10; }
 .reader-title { display: grid; min-width: 0; }
 .reader-title strong, .reader-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .reader-title span { color: var(--muted); font-size: 0.72rem; }
@@ -232,10 +233,17 @@ button.storage-badge { cursor: pointer; }
 .page-previous { left: 14px; }
 .page-next { right: 14px; }
 
-.reader-footer { align-items: center; background: var(--reader-chrome); border-top: 1px solid var(--border); color: var(--muted); display: grid; font-size: 0.72rem; gap: 14px; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); min-height: 42px; padding: 6px 14px; }
-.footer-progress { align-items: center; display: flex; gap: 9px; }
-.footer-progress .progress-track { width: 100px; }
+.reader-footer { align-items: center; background: var(--reader-chrome); border-top: 1px solid var(--border); color: var(--muted); display: grid; font-size: 0.72rem; gap: 14px; grid-template-columns: minmax(0, 1fr) minmax(180px, 1.2fr) minmax(0, 1fr); min-height: 42px; overflow: hidden; padding: 6px 14px; transition: opacity 140ms ease, min-height 180ms ease, padding 180ms ease; }
+.footer-progress { align-items: center; display: flex; gap: 9px; justify-self: center; max-width: 440px; width: 100%; }
+.footer-progress input { accent-color: var(--accent); cursor: pointer; min-width: 100px; width: 100%; }
+.footer-progress output { min-width: 3.2em; text-align: right; }
 .flow-toggle { align-items: center; background: transparent; border: 0; cursor: pointer; display: flex; gap: 5px; justify-self: end; }
+.reader-footer-actions { align-items: center; display: flex; gap: 10px; justify-content: flex-end; min-width: 0; }
+.remaining-time { white-space: nowrap; }
+
+.reader-app.is-immersive { grid-template-rows: 0 minmax(0, 1fr) 0; }
+.reader-app.is-immersive .reader-header,
+.reader-app.is-immersive .reader-footer { border-width: 0; min-height: 0; opacity: 0; padding-block: 0; pointer-events: none; visibility: hidden; }
 
 .loading-screen { align-items: center; display: flex; gap: 10px; justify-content: center; min-height: 100vh; }
 .loading-screen.is-compact { background: var(--reader-bg); inset: 0; min-height: 0; position: absolute; z-index: 7; }
@@ -276,9 +284,13 @@ button.storage-badge { cursor: pointer; }
 .search-input { align-items: center; display: grid; gap: 6px; grid-template-columns: auto minmax(0,1fr) auto; }
 .search-input input { min-width: 0; }
 .search-input button { background: var(--accent-strong); border: 0; border-radius: 7px; color: #fff; cursor: pointer; height: 34px; }
+.search-navigation { align-items: center; display: grid; font-size: .72rem; gap: 5px; grid-template-columns: 1fr auto 1fr; margin-bottom: 10px; }
+.search-navigation button { align-items: center; background: var(--panel); border: 1px solid var(--border); border-radius: 7px; cursor: pointer; display: flex; gap: 3px; justify-content: center; min-height: 34px; }
+.search-navigation button:last-child { justify-self: stretch; }
 .search-results { display: grid; gap: 7px; }
 .search-results button { background: var(--panel); border: 1px solid var(--border); border-radius: 9px; cursor: pointer; display: grid; gap: 5px; padding: 10px; text-align: left; }
 .search-results button:hover { border-color: var(--accent); }
+.search-results button[aria-current="true"] { background: var(--accent-soft); border-color: var(--accent); }
 .search-results span { color: var(--muted); font-size: .77rem; }
 
 @media (max-width: 960px) {
@@ -288,6 +300,8 @@ button.storage-badge { cursor: pointer; }
 }
 
 @media (max-width: 720px) {
+  .library-header { align-items: flex-start; flex-wrap: wrap; }
+  .library-actions { flex-wrap: wrap; justify-content: flex-end; }
   .library-intro { align-items: start; flex-direction: column; }
   .book-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .reader-header { grid-template-columns: auto minmax(0, 1fr); }
@@ -299,6 +313,7 @@ button.storage-badge { cursor: pointer; }
   .reader-layout { position: relative; }
   .reader-footer { grid-template-columns: 1fr auto; }
   .reader-footer > span:first-child { display: none; }
+  .reader-footer-actions .remaining-time { display: none; }
   .page-control { display: none; }
 }
 
@@ -308,6 +323,9 @@ button.storage-badge { cursor: pointer; }
   .library-header .primary-button svg { display: none; }
   .library-actions .secondary-button { padding: 8px; }
   .library-actions .secondary-button svg { display: none; }
+  .library-actions { display: grid; gap: 5px; grid-template-columns: repeat(4, minmax(0, 1fr)); width: 100%; }
+  .library-actions .primary-button,
+  .library-actions .secondary-button { font-size: .76rem; min-width: 0; padding-inline: 4px; white-space: nowrap; }
   .library-main { padding: 40px 16px 60px; }
   .book-grid { gap: 18px 12px; }
   .generated-cover { font-size: 1.15rem; }

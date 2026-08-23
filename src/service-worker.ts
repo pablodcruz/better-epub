@@ -15,6 +15,7 @@ declare const self: ServiceWorkerGlobalScope & {
 const DATABASE_NAME = "better-epub";
 const RESOURCE_STORE = "resources";
 const BOOK_MARKER = "/__books/";
+const SHARE_TARGET_CACHE = "better-epub-share-target";
 
 cleanupOutdatedCaches();
 precacheAndRoute(self.__WB_MANIFEST);
@@ -24,9 +25,31 @@ self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim(
 
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
+  if (url.origin === self.location.origin && event.request.method === "POST" && url.searchParams.get("share-target") === "epub") {
+    event.respondWith(receiveSharedEpubs(event.request));
+    return;
+  }
   if (url.origin !== self.location.origin || !url.pathname.includes(BOOK_MARKER)) return;
   event.respondWith(serveBookResource(event.request, url));
 });
+
+async function receiveSharedEpubs(request: Request) {
+  const form = await request.formData();
+  const files = form.getAll("epubs").filter((value): value is File => value instanceof File);
+  const cache = await caches.open(SHARE_TARGET_CACHE);
+  for (const file of files) {
+    if (!file.name.toLowerCase().endsWith(".epub") && file.type !== "application/epub+zip") continue;
+    const id = globalThis.crypto.randomUUID();
+    const key = new URL(`./__shared_epub__/${id}`, self.registration.scope);
+    await cache.put(key, new Response(file, {
+      headers: {
+        "Content-Type": "application/epub+zip",
+        "X-Better-Epub-Filename": encodeURIComponent(file.name),
+      },
+    }));
+  }
+  return Response.redirect(new URL("./?shared=1", self.registration.scope), 303);
+}
 
 setCatchHandler(async ({ request }) => {
   if (request.destination === "document") {

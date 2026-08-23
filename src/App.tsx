@@ -20,7 +20,9 @@ import { importEpub } from "./lib/epub";
 import { createPositions, createPublication, flattenToc } from "./lib/readium";
 import { virtualResourceUrl } from "./lib/paths";
 import { createAnnotationExport, type AnnotationExportFormat } from "./lib/annotations";
+import { createLibraryBackup, restoreLibraryBackup } from "./lib/backup";
 import { pageTurnForKey, pageTurnForSwipe, type PageTurn } from "./lib/navigation";
+import { findResourceMatches, type BookSearchResult } from "./lib/search";
 import type {
   AnnotationRecord,
   BookRecord,
@@ -30,7 +32,6 @@ import type {
 
 type AppRoute = { screen: "library" } | { screen: "reader"; bookId: string };
 type StorageStatus = Awaited<ReturnType<typeof getStorageStatus>>;
-type SearchResult = { href: string; title: string; snippet: string };
 type InstallPromptEvent = Event & {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
@@ -41,6 +42,7 @@ export default function App() {
   const [books, setBooks] = useState<BookRecord[]>([]);
   const [importing, setImporting] = useState(false);
   const [message, setMessage] = useState("");
+  const [managingLibrary, setManagingLibrary] = useState(false);
   const [storageStatus, setStorageStatus] = useState<StorageStatus>({ persisted: false, usage: 0, quota: 0 });
   const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
 
@@ -80,17 +82,58 @@ export default function App() {
     setImporting(true);
     setMessage("");
     try {
+      const importedTitles: string[] = [];
       for (const file of candidates) {
         const imported = await importEpub(file);
         await saveImportedBook(imported.book, imported.resources);
+        importedTitles.push(imported.book.title);
       }
       await requestPersistentStorage();
       await refresh();
-      setMessage(`${candidates.length === 1 ? candidates[0].name : `${candidates.length} books`} imported locally.`);
+      setMessage(`${candidates.length === 1 ? `“${importedTitles[0]}”` : `${candidates.length} books`} imported locally.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "The EPUB could not be imported.");
     } finally {
       setImporting(false);
+    }
+  }, [refresh]);
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("shared") !== "1") return;
+    window.history.replaceState({}, "", `${url.pathname}${url.hash}`);
+    void consumeSharedEpubs().then((files) => {
+      if (files.length) return handleImport(files);
+      setMessage("No shared EPUB was found. Choose the file again to import it.");
+    }).catch((error) => setMessage(error instanceof Error ? error.message : "The shared EPUB could not be opened."));
+  }, [handleImport]);
+
+  const handleBackup = useCallback(async () => {
+    setManagingLibrary(true);
+    setMessage("");
+    try {
+      const backup = await createLibraryBackup();
+      downloadBlob(backup.blob, backup.name);
+      setMessage(`${backup.bookCount} ${backup.bookCount === 1 ? "book" : "books"} backed up with reading progress, preferences, and notes.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "The library backup could not be created.");
+    } finally {
+      setManagingLibrary(false);
+    }
+  }, []);
+
+  const handleRestore = useCallback(async (file: File) => {
+    setManagingLibrary(true);
+    setMessage("");
+    try {
+      const count = await restoreLibraryBackup(file);
+      await requestPersistentStorage();
+      await refresh();
+      setMessage(`${count} ${count === 1 ? "book" : "books"} restored with reading progress, preferences, and notes.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "The library backup could not be restored.");
+    } finally {
+      setManagingLibrary(false);
     }
   }, [refresh]);
 
@@ -141,6 +184,9 @@ export default function App() {
         await requestPersistentStorage();
         await refresh();
       }}
+      managingLibrary={managingLibrary}
+      onBackup={handleBackup}
+      onRestore={handleRestore}
     />
   );
 }
@@ -156,6 +202,9 @@ function LibraryView({
   canInstall,
   onInstall,
   onPersist,
+  managingLibrary,
+  onBackup,
+  onRestore,
 }: {
   books: BookRecord[];
   importing: boolean;
@@ -167,8 +216,12 @@ function LibraryView({
   canInstall: boolean;
   onInstall: () => void;
   onPersist: () => void;
+  managingLibrary: boolean;
+  onBackup: () => void;
+  onRestore: (file: File) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const restoreInputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
 
   return (
@@ -181,7 +234,15 @@ function LibraryView({
               <Icon name="download" /> Install app
             </button>
           )}
-          <button className="primary-button" type="button" onClick={() => inputRef.current?.click()} disabled={importing}>
+          {books.length > 0 && (
+            <button className="secondary-button" type="button" onClick={onBackup} disabled={managingLibrary || importing}>
+              <Icon name="download" /> Backup
+            </button>
+          )}
+          <button className="secondary-button" type="button" onClick={() => restoreInputRef.current?.click()} disabled={managingLibrary || importing}>
+            <Icon name="upload" /> {managingLibrary ? "Working…" : "Restore"}
+          </button>
+          <button className="primary-button" type="button" onClick={() => inputRef.current?.click()} disabled={importing || managingLibrary}>
             <Icon name="plus" /> {importing ? "Importing…" : "Import EPUB"}
           </button>
         </div>
@@ -193,6 +254,18 @@ function LibraryView({
           accept=".epub,application/epub+zip"
           multiple
           onChange={(event) => event.target.files && onImport(event.target.files)}
+        />
+        <input
+          ref={restoreInputRef}
+          className="visually-hidden"
+          type="file"
+          aria-label="Restore Better ePub library backup"
+          accept=".betterepub-backup,application/zip"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.target.value = "";
+            if (file) onRestore(file);
+          }}
         />
       </header>
 
@@ -300,9 +373,13 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
   const [noteDraft, setNoteDraft] = useState("");
   const [panel, setPanel] = useState<"toc" | "notes" | "appearance" | "search" | null>("toc");
   const [query, setQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [searchResults, setSearchResults] = useState<BookSearchResult[]>([]);
+  const [activeSearchIndex, setActiveSearchIndex] = useState(-1);
   const [searching, setSearching] = useState(false);
   const [currentLocator, setCurrentLocator] = useState<Locator | null>(null);
+  const [navigationHistory, setNavigationHistory] = useState<ReturnType<Locator["serialize"]>[]>([]);
+  const [immersive, setImmersive] = useState(false);
+  const [wordCount, setWordCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -314,6 +391,14 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
       setPreferences(storedPreferences);
       setAnnotations(storedAnnotations);
     });
+  }, [book.id]);
+
+  useEffect(() => {
+    let disposed = false;
+    void countBookWords(book).then((count) => {
+      if (!disposed) setWordCount(count);
+    });
+    return () => { disposed = true; };
   }, [book.id]);
 
   useEffect(() => {
@@ -360,7 +445,11 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
           tap: () => false,
           click: () => false,
           zoom: () => undefined,
-          miscPointer: () => undefined,
+          miscPointer: () => setImmersive((current) => {
+            const next = !current;
+            if (next) setPanel(null);
+            return next;
+          }),
           scroll: () => undefined,
           customEvent: () => undefined,
           handleLocator: () => false,
@@ -444,6 +533,24 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
   }, [annotations, loading]);
 
   useEffect(() => {
+    const navigator = navigatorRef.current;
+    if (!navigator) return;
+    const decorations = searchResults.flatMap((result) => {
+      const locator = Locator.deserialize(result.locator);
+      return locator ? [{
+        id: result.id,
+        locator,
+        style: {
+          type: DecorationStyleType.HighlightUnderline,
+          tint: "#7bbf96",
+          enforceContrast: true,
+        },
+      }] : [];
+    });
+    navigator.applyDecorations(decorations, "search-results");
+  }, [searchResults, loading]);
+
+  useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       if (target?.matches("input, textarea, select, button, [contenteditable='true']")) return;
@@ -456,7 +563,10 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
         void addBookmark();
       } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
         event.preventDefault();
+        setImmersive(false);
         setPanel("search");
+      } else if (event.key === "Escape") {
+        setImmersive(false);
       }
     };
     readerInputHandlers.current.keyDown = handleKeyDown;
@@ -513,14 +623,31 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
     setAnnotations((current) => current.filter((annotation) => annotation.id !== id));
   };
 
+  const navigateToLocator = (locator: Locator, remember = true) => {
+    const navigator = navigatorRef.current;
+    if (!navigator) return;
+    if (remember) {
+      const previous = navigator.currentLocator ?? currentLocator;
+      if (previous) setNavigationHistory((history) => [...history.slice(-18), previous.serialize()]);
+    }
+    navigator.go(locator, true, () => undefined);
+  };
+
+  const returnToPreviousLocation = () => {
+    const previous = navigationHistory.at(-1);
+    const locator = previous ? Locator.deserialize(previous) : undefined;
+    if (!locator) return;
+    setNavigationHistory((history) => history.slice(0, -1));
+    navigateToLocator(locator, false);
+  };
+
   const goToHref = (href: string, title?: string) => {
     const publication = publicationRef.current;
-    const navigator = navigatorRef.current;
-    if (!publication || !navigator) return;
+    if (!publication) return;
     const source = flattenToc(book.manifest.toc).find((item) => item.href === href)
       ?? book.manifest.readingOrder.find((item) => item.href === href || href.startsWith(`${item.href}#`));
     const link = Link.deserialize({ href, type: source?.type || "application/xhtml+xml", title: title || source?.title });
-    if (link) navigator.goLink(link, true, () => undefined);
+    if (link) navigateToLocator(link.locator);
   };
 
   const runSearch = async (event: React.FormEvent) => {
@@ -531,32 +658,57 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
       return;
     }
     setSearching(true);
-    const results: SearchResult[] = [];
+    const results: BookSearchResult[] = [];
     for (const [index, item] of book.manifest.readingOrder.entries()) {
       const path = item.href.split("#", 1)[0];
       const record = await db.resources.get([book.id, path]);
       if (!record || !record.mediaType.includes("html")) continue;
       const document = new DOMParser().parseFromString(await record.blob.text(), record.mediaType as DOMParserSupportedType);
       document.querySelectorAll("script, style, nav").forEach((element) => element.remove());
-      const text = document.body?.textContent?.replace(/\s+/g, " ").trim() || "";
-      const match = text.toLocaleLowerCase().indexOf(needle);
-      if (match < 0) continue;
-      const start = Math.max(0, match - 70);
-      const end = Math.min(text.length, match + needle.length + 110);
-      results.push({
-        href: item.href,
+      const text = document.body?.textContent || "";
+      results.push(...findResourceMatches({
+        href: item.href.split("#", 1)[0],
+        type: item.type || "application/xhtml+xml",
         title: item.title || chapterTitle(book, item.href, index),
-        snippet: `${start > 0 ? "…" : ""}${text.slice(start, end)}${end < text.length ? "…" : ""}`,
-      });
+        text,
+        spineIndex: index,
+        spineLength: book.manifest.readingOrder.length,
+      }, needle, 50 - results.length));
       if (results.length >= 50) break;
     }
     setSearchResults(results);
+    setActiveSearchIndex(results.length ? 0 : -1);
     setSearching(false);
+  };
+
+  const navigateSearchResult = (index: number) => {
+    if (!searchResults.length) return;
+    const boundedIndex = (index + searchResults.length) % searchResults.length;
+    const locator = Locator.deserialize(searchResults[boundedIndex].locator);
+    if (!locator) return;
+    setActiveSearchIndex(boundedIndex);
+    navigateToLocator(locator);
   };
 
   const progress = currentLocator?.locations.totalProgression
     ?? Math.max(0, (currentLocator?.locations.position ?? 1) - 1) / Math.max(book.manifest.readingOrder.length, 1);
   const rightToLeft = book.manifest.metadata.readingProgression === "rtl";
+  const remainingMinutes = wordCount > 0 ? Math.max(1, Math.ceil((wordCount * (1 - progress)) / 225)) : 0;
+  const seekToProgress = (nextProgress: number) => {
+    const items = book.manifest.readingOrder;
+    if (!items.length) return;
+    const bounded = Math.min(0.999999, Math.max(0, nextProgress));
+    const exactIndex = bounded * items.length;
+    const index = Math.min(items.length - 1, Math.floor(exactIndex));
+    const item = items[index];
+    const locator = Locator.deserialize({
+      href: item.href.split("#", 1)[0],
+      type: item.type || "application/xhtml+xml",
+      title: item.title || chapterTitle(book, item.href, index),
+      locations: { progression: exactIndex - index, totalProgression: bounded, position: index + 1 },
+    });
+    if (locator) navigateToLocator(locator);
+  };
   const turnPage = (direction: PageTurn) => {
     if (direction === "forward") navigatorRef.current?.goForward(true, () => undefined);
     else navigatorRef.current?.goBackward(true, () => undefined);
@@ -575,7 +727,7 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
   readerInputHandlers.current.pointerUp = handlePointerUp;
 
   return (
-    <div className={`reader-app theme-${preferences?.theme ?? "paper"}`}>
+    <div className={`reader-app theme-${preferences?.theme ?? "paper"} ${immersive ? "is-immersive" : ""}`}>
       <header className="reader-header">
         <button className="icon-button" type="button" onClick={onBack} aria-label="Back to library"><Icon name="back" /></button>
         <div className="reader-title"><strong>{book.title}</strong><span>{book.author}</span></div>
@@ -595,10 +747,10 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
             {panel === "toc" && <TocPanel items={book.manifest.toc} readingOrder={book.manifest.readingOrder} onNavigate={goToHref} />}
             {panel === "notes" && <NotesPanel annotations={annotations} onNavigate={(annotation) => {
               const locator = Locator.deserialize(annotation.locator);
-              if (locator) navigatorRef.current?.go(locator, true, () => undefined);
+              if (locator) navigateToLocator(locator);
             }} onDelete={deleteAnnotation} book={book} />}
             {panel === "appearance" && preferences && <AppearancePanel preferences={preferences} onChange={updatePreferences} />}
-            {panel === "search" && <SearchPanel query={query} results={searchResults} searching={searching} onQuery={setQuery} onSubmit={runSearch} onNavigate={(result) => goToHref(result.href, result.title)} />}
+            {panel === "search" && <SearchPanel query={query} results={searchResults} activeIndex={activeSearchIndex} searching={searching} onQuery={setQuery} onSubmit={runSearch} onNavigate={(index) => navigateSearchResult(index)} />}
           </aside>
         )}
 
@@ -621,10 +773,14 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
 
       <footer className="reader-footer">
         <span>{currentLocator?.title || chapterTitle(book, currentLocator?.href)}</span>
-        <div className="footer-progress"><div className="progress-track"><span style={{ width: `${Math.round(progress * 100)}%` }} /></div><span>{Math.round(progress * 100)}%</span></div>
-        <button type="button" className="flow-toggle" onClick={() => preferences && void updatePreferences({ flow: preferences.flow === "paginated" ? "scrolled" : "paginated" })}>
-          <Icon name={preferences?.flow === "scrolled" ? "scroll" : "pages"} /> {preferences?.flow === "scrolled" ? "Continuous" : "Pages"}
-        </button>
+        <ProgressScrubber progress={progress} onSeek={seekToProgress} />
+        <div className="reader-footer-actions">
+          {navigationHistory.length > 0 && <button type="button" className="flow-toggle" onClick={returnToPreviousLocation}><Icon name="return" /> Return</button>}
+          {remainingMinutes > 0 && <span className="remaining-time">{remainingMinutes} min left</span>}
+          <button type="button" className="flow-toggle" onClick={() => preferences && void updatePreferences({ flow: preferences.flow === "paginated" ? "scrolled" : "paginated" })}>
+            <Icon name={preferences?.flow === "scrolled" ? "scroll" : "pages"} /> {preferences?.flow === "scrolled" ? "Continuous" : "Pages"}
+          </button>
+        </div>
       </footer>
 
       {selection?.locator && (
@@ -716,13 +872,54 @@ function AppearancePanel({ preferences, onChange }: { preferences: ReaderPrefere
   );
 }
 
-function SearchPanel({ query, results, searching, onQuery, onSubmit, onNavigate }: { query: string; results: SearchResult[]; searching: boolean; onQuery: (value: string) => void; onSubmit: (event: React.FormEvent) => void; onNavigate: (result: SearchResult) => void }) {
+function SearchPanel({ query, results, activeIndex, searching, onQuery, onSubmit, onNavigate }: { query: string; results: BookSearchResult[]; activeIndex: number; searching: boolean; onQuery: (value: string) => void; onSubmit: (event: React.FormEvent) => void; onNavigate: (index: number) => void }) {
   return (
     <div className="search-panel">
       <form onSubmit={onSubmit}><label className="search-input"><span className="visually-hidden">Search this book</span><Icon name="search" /><input autoFocus value={query} onChange={(event) => onQuery(event.target.value)} placeholder="Search this book" /><button type="submit">Search</button></label></form>
-      <p className="result-count" role="status">{searching ? "Searching…" : results.length ? `${results.length} matching chapters` : query ? "No matches yet" : "Enter two or more characters."}</p>
-      <div className="search-results">{results.map((result) => <button key={result.href} type="button" onClick={() => onNavigate(result)}><strong>{result.title}</strong><span>{result.snippet}</span></button>)}</div>
+      <p className="result-count" role="status">{searching ? "Searching…" : results.length ? `${results.length} ${results.length === 1 ? "occurrence" : "occurrences"}` : query ? "No matches yet" : "Enter two or more characters."}</p>
+      {results.length > 0 && <div className="search-navigation" aria-label="Search result navigation">
+        <button type="button" onClick={() => onNavigate(activeIndex - 1)}><Icon name="chevron-left" /> Previous</button>
+        <span>{activeIndex + 1} of {results.length}</span>
+        <button type="button" onClick={() => onNavigate(activeIndex + 1)}>Next <Icon name="chevron-right" /></button>
+      </div>}
+      <div className="search-results">{results.map((result, index) => <button key={result.id} type="button" aria-current={index === activeIndex ? "true" : undefined} onClick={() => onNavigate(index)}><strong>{result.title}</strong><span>{result.snippet}</span></button>)}</div>
     </div>
+  );
+}
+
+function ProgressScrubber({ progress, onSeek }: { progress: number; onSeek: (progress: number) => void }) {
+  const [value, setValue] = useState(progress);
+  const dragging = useRef(false);
+  useEffect(() => {
+    if (!dragging.current) setValue(progress);
+  }, [progress]);
+  const commit = (nextValue = value) => {
+    if (!dragging.current) return;
+    dragging.current = false;
+    onSeek(nextValue);
+  };
+  return (
+    <label className="footer-progress">
+      <span className="visually-hidden">Reading progress</span>
+      <input
+        type="range"
+        min="0"
+        max="1"
+        step="0.001"
+        value={value}
+        aria-valuetext={`${Math.round(value * 100)}% complete`}
+        onPointerDown={() => { dragging.current = true; }}
+        onChange={(event) => setValue(Number(event.target.value))}
+        onPointerUp={(event) => commit(Number(event.currentTarget.value))}
+        onBlur={(event) => commit(Number(event.currentTarget.value))}
+        onKeyUp={(event) => {
+          if (["ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"].includes(event.key)) {
+            onSeek(Number(event.currentTarget.value));
+          }
+        }}
+      />
+      <output>{Math.round(value * 100)}%</output>
+    </label>
   );
 }
 
@@ -766,6 +963,8 @@ function Icon({ name }: { name: string }) {
     pages: <><path d="M4 5h7v14H4zM13 5h7v14h-7z" /></>,
     shield: <><path d="M12 3 5 6v5c0 4.5 2.8 8 7 10 4.2-2 7-5.5 7-10V6z" /><path d="m9 12 2 2 4-5" /></>,
     download: <><path d="M12 4v11M8 11l4 4 4-4M5 20h14" /></>,
+    upload: <><path d="M12 20V9M8 13l4-4 4 4M5 4h14" /></>,
+    return: <><path d="m9 7-5 5 5 5" /><path d="M4 12h10a5 5 0 0 1 5 5v2" /></>,
   };
   return <svg viewBox="0 0 24 24" aria-hidden="true">{paths[name] ?? paths.book}</svg>;
 }
@@ -870,4 +1069,43 @@ function formatBytes(bytes: number) {
   if (bytes < 1024 * 1024) return `${Math.max(0, bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
+}
+
+async function countBookWords(book: BookRecord) {
+  let count = 0;
+  for (const item of book.manifest.readingOrder) {
+    const path = item.href.split("#", 1)[0];
+    const record = await db.resources.get([book.id, path]);
+    if (!record || !record.mediaType.includes("html")) continue;
+    const document = new DOMParser().parseFromString(await record.blob.text(), record.mediaType as DOMParserSupportedType);
+    document.querySelectorAll("script, style, nav").forEach((element) => element.remove());
+    count += document.body?.textContent?.trim().split(/\s+/u).filter(Boolean).length ?? 0;
+  }
+  return count;
+}
+
+async function consumeSharedEpubs() {
+  if (!("caches" in window)) return [];
+  const cache = await caches.open("better-epub-share-target");
+  const requests = (await cache.keys()).filter((request) => new URL(request.url).pathname.includes("/__shared_epub__/"));
+  const files: File[] = [];
+  for (const request of requests) {
+    const response = await cache.match(request);
+    if (response) {
+      const encodedName = response.headers.get("X-Better-Epub-Filename") || "shared.epub";
+      const name = decodeURIComponent(encodedName);
+      files.push(new File([await response.blob()], name, { type: "application/epub+zip" }));
+    }
+    await cache.delete(request);
+  }
+  return files;
+}
+
+function downloadBlob(blob: Blob, name: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
