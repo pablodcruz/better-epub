@@ -29,6 +29,9 @@ interface BackupManifest {
 export async function createLibraryBackup() {
   const books = await db.books.toArray();
   if (books.length === 0) throw new Error("Import at least one book before creating a backup.");
+  if (books.length > MAX_BOOKS) {
+    throw new Error(`This library exceeds the ${MAX_BOOKS.toLocaleString("en-US")}-book restore limit. No backup was created.`);
+  }
   const files: Record<string, Uint8Array> = {};
   const states: BackupBookState[] = [];
 
