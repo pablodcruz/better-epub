@@ -27,35 +27,44 @@ interface BackupManifest {
 }
 
 export async function createLibraryBackup() {
-  const books = await db.books.toArray();
-  if (books.length === 0) throw new Error("Import at least one book before creating a backup.");
-  const files: Record<string, Uint8Array> = {};
-  const states: BackupBookState[] = [];
+  const snapshot = await db.transaction("r", [db.books, db.resources, db.annotations, db.preferences, db.sessions], async () => {
+    const books = await db.books.toArray();
+    if (books.length === 0) throw new Error("Import at least one book before creating a backup.");
+    const entries: { state: BackupBookState; blob: Blob }[] = [];
 
-  for (const book of books) {
-    const [source, annotations, storedPreferences, sessions] = await Promise.all([
-      db.resources.get([book.id, "__source__.epub"]),
-      db.annotations.where("bookId").equals(book.id).toArray(),
-      db.preferences.get(book.id),
-      db.sessions.where("bookId").equals(book.id).toArray(),
-    ]);
-    if (!source) throw new Error(`The original EPUB for “${book.title}” is missing.`);
-    const sourcePath = `books/${book.id}.epub`;
-    files[sourcePath] = new Uint8Array(await readBlob(source.blob));
-    states.push({
-      source: sourcePath,
-      book,
-      annotations,
-      preferences: storedPreferences ?? { bookId: book.id, ...DEFAULT_PREFERENCES },
-      sessions,
-    });
+    for (const book of books) {
+      const [source, annotations, storedPreferences, sessions] = await Promise.all([
+        db.resources.get([book.id, "__source__.epub"]),
+        db.annotations.where("bookId").equals(book.id).toArray(),
+        db.preferences.get(book.id),
+        db.sessions.where("bookId").equals(book.id).toArray(),
+      ]);
+      if (!source) throw new Error(`The original EPUB for “${book.title}” is missing.`);
+      entries.push({
+        state: {
+          source: `books/${book.id}.epub`,
+          book,
+          annotations,
+          preferences: storedPreferences ?? { bookId: book.id, ...DEFAULT_PREFERENCES },
+          sessions,
+        },
+        blob: source.blob,
+      });
+    }
+
+    return entries;
+  });
+
+  const files: Record<string, Uint8Array> = {};
+  for (const { state, blob } of snapshot) {
+    files[state.source] = new Uint8Array(await readBlob(blob));
   }
 
   const manifest: BackupManifest = {
     format: BACKUP_FORMAT,
     version: BACKUP_VERSION,
     createdAt: new Date().toISOString(),
-    books: states,
+    books: snapshot.map(({ state }) => state),
   };
   const encodedManifest = new TextEncoder().encode(JSON.stringify(manifest));
   files["backup.json"] = new Uint8Array(encodedManifest.buffer, encodedManifest.byteOffset, encodedManifest.byteLength);
@@ -66,7 +75,7 @@ export async function createLibraryBackup() {
     blob: new Blob([bytes.slice(0)], { type: "application/zip" }),
     bytes,
     name: `better-epub-library-${date}.betterepub-backup`,
-    bookCount: books.length,
+    bookCount: snapshot.length,
   };
 }
 
