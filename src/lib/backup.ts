@@ -1,6 +1,7 @@
 import { strFromU8, unzipSync, zipSync } from "fflate";
+import Dexie from "dexie";
 import { Locator } from "@readium/shared";
-import { db, DEFAULT_PREFERENCES } from "./db";
+import { db, DEFAULT_PREFERENCES, notifyLibraryChange } from "./db";
 import { importEpub } from "./epub";
 import type { AnnotationRecord, BookRecord, ReaderPreferencesRecord, ReadingSessionRecord } from "./types";
 
@@ -35,7 +36,7 @@ export async function createLibraryBackup() {
     }
     const entries: { state: BackupBookState; blob: Blob }[] = [];
 
-    for (const book of books) {
+    for (const { restoreRevision: _revision, ...book } of books) {
       const [source, annotations, storedPreferences, sessions] = await Promise.all([
         db.resources.get([book.id, "__source__.epub"]),
         db.annotations.where("bookId").equals(book.id).toArray(),
@@ -100,44 +101,54 @@ export async function restoreLibraryBackup(file: File) {
   const manifestBytes = archive["backup.json"];
   if (!manifestBytes) throw new Error("This is not a Better ePub library backup.");
   const manifest = parseManifest(strFromU8(manifestBytes));
+  if (!manifest.books.length) return 0;
 
-  let restored = 0;
-  for (const state of manifest.books) {
-    const source = archive[state.source];
-    if (!source) throw new Error(`The EPUB for “${state.book.title}” is missing from the backup.`);
-    const imported = await importEpub(new File([copyArrayBuffer(source)], `${state.book.id}.epub`, { type: "application/epub+zip" }));
-    const bookId = state.book.id;
-    const lastLocator = state.book.lastLocator && Locator.deserialize(state.book.lastLocator)
-      ? state.book.lastLocator
-      : undefined;
-    const restoredBook: BookRecord = {
-      ...imported.book,
-      id: bookId,
-      importedAt: finiteNumber(state.book.importedAt, imported.book.importedAt),
-      lastOpenedAt: finiteNumber(state.book.lastOpenedAt, imported.book.lastOpenedAt),
-      progress: clamp(finiteNumber(state.book.progress, 0), 0, 1),
-      lastLocator,
-    };
-    const resources = imported.resources.map((resource) => ({ ...resource, bookId }));
-    const annotations = normalizeAnnotations(state.annotations, bookId);
-    const preferences = normalizePreferences(state.preferences, bookId);
-    const sessions = normalizeSessions(state.sessions, bookId);
+  // One transaction across all books and stores. Prepare each book in turn
+  // rather than keeping an entire library of expanded EPUBs in memory.
+  const restoreRevision = crypto.randomUUID();
+  await db.transaction("rw", [db.books, db.resources, db.annotations, db.preferences, db.sessions], async (tx) => {
+    for (const state of manifest.books) await restoreBook(state, archive[state.source], restoreRevision);
+    // The native transaction also covers an enclosing Dexie transaction, if any.
+    tx.idbtrans.addEventListener("complete", () => notifyLibraryChange(), { once: true });
+  });
+  return manifest.books.length;
+}
 
-    await db.transaction("rw", [db.books, db.resources, db.annotations, db.preferences, db.sessions], async () => {
-      await Promise.all([
-        db.resources.where("bookId").equals(bookId).delete(),
-        db.annotations.where("bookId").equals(bookId).delete(),
-        db.sessions.where("bookId").equals(bookId).delete(),
-      ]);
-      await db.books.put(restoredBook);
-      await db.resources.bulkPut(resources);
-      if (annotations.length) await db.annotations.bulkPut(annotations);
-      await db.preferences.put(preferences);
-      if (sessions.length) await db.sessions.bulkPut(sessions);
-    });
-    restored += 1;
-  }
-  return restored;
+async function restoreBook(state: BackupBookState, source: Uint8Array | undefined, restoreRevision: string) {
+  if (!source) throw new Error(`The EPUB for “${state.book.title}” is missing from the backup.`);
+  // EPUB import reads a File and uses Web Crypto. Both await non-IDB work;
+  // keep this transaction active so a later parse or write failure aborts it.
+  const imported = await Dexie.waitFor(importEpub(new File(
+    [copyArrayBuffer(source)], `${state.book.id}.epub`, { type: "application/epub+zip" },
+  )));
+  const bookId = state.book.id;
+  const lastLocator = state.book.lastLocator && Locator.deserialize(state.book.lastLocator)
+    ? state.book.lastLocator
+    : undefined;
+  const restoredBook: BookRecord = {
+    ...imported.book,
+    id: bookId,
+    restoreRevision,
+    importedAt: finiteNumber(state.book.importedAt, imported.book.importedAt),
+    lastOpenedAt: finiteNumber(state.book.lastOpenedAt, imported.book.lastOpenedAt),
+    progress: clamp(finiteNumber(state.book.progress, 0), 0, 1),
+    lastLocator,
+  };
+  const resources = imported.resources.map((resource) => ({ ...resource, bookId }));
+  const annotations = normalizeAnnotations(state.annotations, bookId);
+  const preferences = normalizePreferences(state.preferences, bookId);
+  const sessions = normalizeSessions(state.sessions, bookId);
+
+  await Promise.all([
+    db.resources.where("bookId").equals(bookId).delete(),
+    db.annotations.where("bookId").equals(bookId).delete(),
+    db.sessions.where("bookId").equals(bookId).delete(),
+  ]);
+  await db.books.put(restoredBook);
+  await db.resources.bulkPut(resources);
+  if (annotations.length) await db.annotations.bulkPut(annotations);
+  await db.preferences.put(preferences);
+  if (sessions.length) await db.sessions.bulkPut(sessions);
 }
 
 function normalizeSessions(value: unknown, bookId: string): ReadingSessionRecord[] {

@@ -1,4 +1,5 @@
 import Dexie, { type EntityTable, type Table } from "dexie";
+import { Locator } from "@readium/shared";
 import type {
   AnnotationRecord,
   BookRecord,
@@ -56,6 +57,7 @@ export async function saveImportedBook(book: BookRecord, resources: ResourceReco
     await db.books.put(existing ? {
       ...book,
       importedAt: existing.importedAt,
+      restoreRevision: existing.restoreRevision,
       lastLocator: existing.lastLocator,
       progress: existing.progress,
     } : book);
@@ -85,10 +87,37 @@ export async function removeBook(bookId: string) {
 }
 
 export async function updateBook(bookId: string, patch: Partial<Omit<BookRecord, "manifest">>) {
-  const book = await db.books.get(bookId);
-  if (!book) return;
-  await db.books.put({ ...book, ...patch });
-  notifyLibraryChange(bookId);
+  const updated = await db.books.where("id").equals(bookId).modify((current) => { Object.assign(current, patch); });
+  if (updated) notifyLibraryChange(bookId);
+}
+
+// The reader can finish an edit after a restore. Compare revisions under the
+// same write lock as the mutation, even for an async annotation import.
+export async function saveReaderChange(
+  book: BookRecord,
+  store: "books" | "sessions" | "annotations" | "preferences",
+  write: (current: BookRecord) => Promise<unknown>,
+) {
+  const saved = await db.transaction("rw", [db.books, db[store]], async () => {
+    const current = await db.books.get(book.id);
+    if (!current || current.restoreRevision !== book.restoreRevision) return false;
+    // A callback can return false when there is no change to publish.
+    return (await write(current)) !== false;
+  });
+  if (saved && (store === "books" || store === "sessions")) notifyLibraryChange(book.id);
+  return saved;
+}
+
+export function saveReadingPosition(book: BookRecord, locator: Locator, progress: number) {
+  const next = locator.serialize();
+  return saveReaderChange(book, "books", async (current) => {
+    // Readium can report the existing locator as soon as its frame is ready.
+    // That is not a page turn, and should not make a restored book look newly opened.
+    const previous = current.lastLocator && Locator.deserialize(current.lastLocator)?.serialize();
+    if (current.progress === progress && previous && JSON.stringify(previous) === JSON.stringify(next)) return false;
+    await db.books.put({ ...current, lastLocator: next, progress, lastOpenedAt: Date.now() });
+    return true;
+  });
 }
 
 export function subscribeLibraryChanges(listener: (bookId?: string) => void) {
