@@ -32,6 +32,8 @@ export interface StoredManifest {
 
 export interface BookRecord {
   id: string;
+  // Local generation used to invalidate open readers when this book is restored.
+  restoreRevision?: string;
   title: string;
   author: string;
   description?: string;
