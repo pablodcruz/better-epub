@@ -65,6 +65,15 @@ python scripts/replay-backup-browser.py backup-limits
 
 If Playwright reports missing system libraries on Linux, use `python -m playwright install --with-deps --only-shell chromium`. To reuse a local Chromium executable, add `--chromium /path/to/chromium` to the test command. Use the `CHROMIUM_PATH` environment variable to select a local executable for the export replays. The checks do not use the deployed site or a real library.
 
+The release-cycle checks take a second production build from the exact previous revision (the PR base in CI). Build it with the same locked Node dependencies in a separate local checkout; pass its `dist/` below as `/path/to/baseline/dist`. Both builds are served on the same loopback origin with synthetic data:
+
+```bash
+python scripts/check_release_cycle.py dist /path/to/baseline/dist
+python scripts/check_frozen_reader.py dist /path/to/baseline/dist
+```
+
+The first command covers ordinary two-tab upgrade and rollback. The second uses Chromium's DevTools Protocol to suspend a previous-version Readium reader while a second tab upgrades and restores. It logs old document lifecycle events, IndexedDB write attempts/commits and the resulting locator/revision. No observed old write only bounds this run; it does not prove stale code cannot write in other conditions.
+
 The development build enables the PWA service worker because the Readium resource bridge uses same-origin virtual book URLs. After the first load, reload once if the browser has not yet taken control of the page.
 
 ## Deploying to GitHub Pages
