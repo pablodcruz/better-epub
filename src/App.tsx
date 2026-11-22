@@ -15,7 +15,8 @@ import {
   requestPersistentStorage,
   saveImportedBook,
   subscribeLibraryChanges,
-  notifyLibraryChange,
+  saveReaderChange,
+  saveReadingPosition,
   updateBook,
 } from "./lib/db";
 import { importEpub } from "./lib/epub";
@@ -407,7 +408,7 @@ function LibraryView({
             {visibleBooks.length === 0 ? <div className="empty-library-filter"><h3>No books found</h3><p>Try a different search or reading status.</p><button className="secondary-button" type="button" onClick={() => { setLibraryQuery(""); setLibraryFilter("all"); }}>Clear filters</button></div> :
             <div className="book-grid">
               {visibleBooks.map((book) => (
-                <BookCard key={book.id} book={book} onOpen={() => onOpen(book.id)} onDelete={() => onDelete(book)} />
+                <BookCard key={`${book.id}:${book.restoreRevision ?? ""}`} book={book} onOpen={() => onOpen(book.id)} onDelete={() => onDelete(book)} />
               ))}
               <button className="add-book-card" type="button" onClick={() => inputRef.current?.click()}>
                 <Icon name="plus" />
@@ -462,7 +463,18 @@ function BookCard({ book, onOpen, onDelete }: { book: BookRecord; onOpen: () => 
   );
 }
 
-function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) {
+type ReaderPanel = "toc" | "notes" | "appearance" | "search" | null;
+type ReaderViewProps = { book: BookRecord; onBack: () => void };
+
+function ReaderView(props: ReaderViewProps) {
+  const [panel, setPanel] = useState<ReaderPanel>("toc");
+  return <ReaderSession key={`${props.book.id}:${props.book.restoreRevision ?? ""}`} {...props} panel={panel} setPanel={setPanel} />;
+}
+
+function ReaderSession({ book, onBack, panel, setPanel }: ReaderViewProps & {
+  panel: ReaderPanel;
+  setPanel: (panel: ReaderPanel) => void;
+}) {
   const navigatorContainer = useRef<HTMLDivElement>(null);
   const navigatorRef = useRef<EpubNavigator | null>(null);
   const publicationRef = useRef<Publication | null>(null);
@@ -488,7 +500,6 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
   const [noteDraft, setNoteDraft] = useState("");
   const [selectionColor, setSelectionColor] = useState<NonNullable<AnnotationRecord["color"]>>("yellow");
   const [selectionTags, setSelectionTags] = useState("");
-  const [panel, setPanel] = useState<"toc" | "notes" | "appearance" | "search" | null>("toc");
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState<BookSearchResult[]>([]);
   const [activeSearchIndex, setActiveSearchIndex] = useState(-1);
@@ -521,7 +532,8 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
       session.endedAt = Date.now();
       session.endProgress = progressRef.current;
       if (session.endedAt - session.startedAt < 5_000) return;
-      void db.sessions.put({ ...session }).then(() => notifyLibraryChange(book.id));
+      const snapshot = { ...session };
+      void saveReaderChange(book, "sessions", () => db.sessions.put(snapshot));
     };
     const handleVisibility = () => { if (document.visibilityState === "hidden") persist(); };
     document.addEventListener("visibilitychange", handleVisibility);
@@ -576,6 +588,7 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
     const mount = async () => {
       try {
         await ensureServiceWorkerControl();
+        if (disposed) return;
         const publication = createPublication(book);
         publicationRef.current = publication;
         const positions = createPositions(book);
@@ -610,11 +623,7 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
               const progress = locator.locations.totalProgression
                 ?? Math.max(0, (locator.locations.position ?? 1) - 1) / Math.max(positions.length, 1);
               progressRef.current = Math.min(1, Math.max(0, progress));
-              void updateBook(book.id, {
-                lastLocator: locator.serialize(),
-                progress: Math.min(1, Math.max(0, progress)),
-                lastOpenedAt: Date.now(),
-              });
+              void saveReadingPosition(book, locator, progressRef.current);
             }, 250);
           },
           timelineItemChanged: () => undefined,
@@ -764,7 +773,7 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
       : {};
     const next = { ...preferences, ...patch, ...accessibilityPatch };
     setPreferences(next);
-    await db.preferences.put(next);
+    await saveReaderChange(book, "preferences", () => db.preferences.put(next));
   };
 
   const addSelectionAnnotation = async (type: "highlight" | "note") => {
@@ -782,7 +791,7 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
       createdAt: now,
       updatedAt: now,
     };
-    await db.annotations.put(annotation);
+    if (!await saveReaderChange(book, "annotations", () => db.annotations.put(annotation))) return;
     setAnnotations((current) => [...current, annotation]);
     setSelection(null);
     setNoteDraft("");
@@ -802,12 +811,12 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
       createdAt: now,
       updatedAt: now,
     };
-    await db.annotations.put(annotation);
+    if (!await saveReaderChange(book, "annotations", () => db.annotations.put(annotation))) return;
     setAnnotations((current) => [...current, annotation]);
   };
 
   const deleteAnnotation = async (id: string) => {
-    await db.annotations.delete(id);
+    if (!await saveReaderChange(book, "annotations", () => db.annotations.delete(id))) return;
     setAnnotations((current) => current.filter((annotation) => annotation.id !== id));
   };
 
@@ -815,14 +824,14 @@ function ReaderView({ book, onBack }: { book: BookRecord; onBack: () => void }) 
     const annotation = annotations.find((candidate) => candidate.id === id);
     if (!annotation) return;
     const next = { ...annotation, ...patch, updatedAt: Date.now() };
-    await db.annotations.put(next);
+    if (!await saveReaderChange(book, "annotations", () => db.annotations.put(next))) return;
     setAnnotations((current) => current.map((candidate) => candidate.id === id ? next : candidate));
   };
 
   const handleAnnotationImport = async (file: File) => {
     try {
       const imported = await importAnnotations(file, book);
-      await db.annotations.bulkPut(imported);
+      if (!await saveReaderChange(book, "annotations", () => db.annotations.bulkPut(imported))) return;
       setAnnotations((current) => [...current, ...imported]);
       setNotice(`${imported.length} ${imported.length === 1 ? "annotation" : "annotations"} imported.`);
     } catch (reason) {
@@ -1515,7 +1524,7 @@ function chapterTitle(book: BookRecord, href?: string, index?: number) {
   return item?.title || (index !== undefined ? `Chapter ${index + 1}` : "Reading");
 }
 
-function panelLabel(panel: NonNullable<Parameters<typeof ReaderView>[0]> extends never ? never : "toc" | "notes" | "appearance" | "search") {
+function panelLabel(panel: Exclude<ReaderPanel, null>) {
   return { toc: "Contents", notes: "Notebook", appearance: "Appearance", search: "Search" }[panel];
 }
 
