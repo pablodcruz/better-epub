@@ -45,3 +45,16 @@ jobs:
         run: |
           python -u scripts/replay-backup-browser.py export-snapshot
           python -u scripts/replay-backup-browser.py backup-limits
+      - name: Check out the PR base for the rollback test
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: baseline-pwa
+          persist-credentials: false
+      - name: Build the previous PWA
+        working-directory: baseline-pwa
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build
+      - name: Check upgrade and rollback with an existing v2 library
+        run: python -u scripts/check_release_cycle.py dist baseline-pwa/dist
