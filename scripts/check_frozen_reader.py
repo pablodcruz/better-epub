@@ -106,7 +106,7 @@ def exercise(browser, origin, selector, candidate, baseline):
 
         # This must be an actual background tab before the lifecycle command.
         active.bring_to_front()
-        reader.wait_for_function("document.visibilityState === 'hidden'", timeout=5000, polling=80)
+        reader.wait_for_function("() => document.visibilityState === 'hidden'", timeout=5000, polling=80)
         emit('old-reader-hidden')
         cdp = ctx.new_cdp_session(reader)
         # CDP changes the actual renderer lifecycle, rather than only setting document visibility.

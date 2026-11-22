@@ -73,7 +73,7 @@ python -m playwright install --no-shell chromium
 python scripts/check_frozen_reader.py dist /path/to/baseline/dist
 ```
 
-The first command covers ordinary two-tab upgrade and rollback. The second uses the full Chromium build and its DevTools Protocol to suspend a previous-version Readium reader while a second tab upgrades and restores. It logs old document lifecycle events, IndexedDB write attempts/commits and the resulting locator/revision. No observed old write only bounds this run; it does not prove stale code cannot write in other conditions.
+The standard release-cycle command covers ordinary two-tab upgrade and rollback. The frozen-reader command is an opt-in local diagnostic, not a required PR check. It uses the full Chromium build and its DevTools Protocol to suspend a previous-version Readium reader while a second tab upgrades and restores. It logs old document lifecycle events, IndexedDB write attempts/commits and the resulting locator/revision. No observed old write only bounds this run; it does not prove stale code cannot write in other conditions.
 
 The development build enables the PWA service worker because the Readium resource bridge uses same-origin virtual book URLs. After the first load, reload once if the browser has not yet taken control of the page.
 
