@@ -58,5 +58,7 @@ jobs:
           npm run build
       - name: Check upgrade and rollback with an existing v2 library
         run: python -u scripts/check_release_cycle.py dist baseline-pwa/dist
+      - name: Install full Chromium for the lifecycle diagnostic
+        run: python -m playwright install --no-shell chromium
       - name: Observe an old reader suspended across a library restore
         run: python -u scripts/check_frozen_reader.py dist baseline-pwa/dist

@@ -104,6 +104,10 @@ def exercise(browser, origin, selector, candidate, baseline):
         expect(reader.locator('.reader-title strong')).to_have_text('Old Reader Copy')
         emit('old-reader-positioned', **position(moved))
 
+        # This must be an actual background tab before the lifecycle command.
+        active.bring_to_front()
+        reader.wait_for_function("document.visibilityState === 'hidden'", timeout=5000, polling=80)
+        emit('old-reader-hidden')
         cdp = ctx.new_cdp_session(reader)
         # CDP changes the actual renderer lifecycle, rather than only setting document visibility.
         # Do not evaluate JS or perform a user action in the suspended reader until it is thawed.
@@ -111,6 +115,13 @@ def exercise(browser, origin, selector, candidate, baseline):
         emit('freeze-requested')
         cdp.send('Page.setWebLifecycleState', {'state': 'frozen'})
         try:
+            # Establish the precondition before starting the service-worker update.
+            until = monotonic() + 5
+            while 'old-freeze' not in events[freeze_window:] and monotonic() < until:
+                active.wait_for_timeout(80)
+            assert 'old-freeze' in events[freeze_window:], (
+                'CDP freeze was not acknowledged; no update or restore was attempted')
+            emit('freeze-acknowledged-before-update')
             active.evaluate('window.initialReleaseMarker = true')
             selector['dist'] = candidate
             active.evaluate("""() => {
@@ -118,7 +129,6 @@ def exercise(browser, origin, selector, candidate, baseline):
             }""")
             wait_stage(active, new_asset, changed=True)
             emit('active-upgraded', asset=new_asset)
-            assert 'old-freeze' in events[freeze_window:], 'CDP freeze was not observed on the old reader'
             restore(active, 'Restored While Reader Frozen', progress=0.125, stamp=1234567890000,
                     locator=dict(href='OPS/one.xhtml', type='application/xhtml+xml',
                                  locations=dict(position=1, progression=0, totalProgression=0.125)))
@@ -195,7 +205,13 @@ def main():
     Thread(target=server.serve_forever, daemon=True).start()
     try:
         with sync_playwright() as api:
-            browser = api.chromium.launch(executable_path=args.chromium, args=[
+            # Use full Chromium (new headless) for real multi-tab visibility.
+            target = {'executable_path': args.chromium} if args.chromium else {'channel': 'chromium'}
+            browser = api.chromium.launch(**target, ignore_default_args=[
+                '--disable-backgrounding-occluded-windows',
+                '--disable-background-timer-throttling',
+                '--disable-renderer-backgrounding',
+            ], args=[
                 '--disable-gpu', '--disable-background-networking',
                 '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1',
             ])
