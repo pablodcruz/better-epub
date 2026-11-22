@@ -53,6 +53,18 @@ npm run check
 npm run build
 ```
 
+Pull requests also run Chromium regressions for backup export and restore using generated EPUBs and a temporary local library. To run it locally with Python 3.12, in a Python virtual environment:
+
+```bash
+python -m pip install playwright==1.62.0
+python -m playwright install --only-shell chromium
+python scripts/check_restore_locator.py dist
+python scripts/replay-backup-browser.py export-snapshot
+python scripts/replay-backup-browser.py backup-limits
+```
+
+If Playwright reports missing system libraries on Linux, use `python -m playwright install --with-deps --only-shell chromium`. To reuse a local Chromium executable, add `--chromium /path/to/chromium` to the test command. Use the `CHROMIUM_PATH` environment variable to select a local executable for the export replays. The checks do not use the deployed site or a real library.
+
 The development build enables the PWA service worker because the Readium resource bridge uses same-origin virtual book URLs. After the first load, reload once if the browser has not yet taken control of the page.
 
 ## Deploying to GitHub Pages
